@@ -6,6 +6,8 @@ import 'package:go_router/go_router.dart';
 
 import '../../app/app_providers.dart';
 import '../../core/models/card_model.dart';
+import 'review_queue.dart';
+import 'review_settings.dart';
 
 abstract final class _ReviewColors {
   static const background = Color(0xfffcfdfb);
@@ -32,6 +34,7 @@ class _ReviewHomePageState extends ConsumerState<ReviewHomePage> {
     final ref = this.ref;
     final cards = ref.watch(cardsProvider);
     final events = ref.watch(reviewEventsProvider);
+    final reviewSettings = ref.watch(reviewSettingsProvider);
 
     return Scaffold(
       backgroundColor: _ReviewColors.background,
@@ -50,7 +53,11 @@ class _ReviewHomePageState extends ConsumerState<ReviewHomePage> {
                 : values
                       .where((card) => card.folder == selectedFolder)
                       .toList();
-            final due = selectedCards.where((card) => card.isDue).toList();
+            final due = buildReviewQueue(
+              cards: selectedCards,
+              settings: reviewSettings,
+              folder: selectedFolder,
+            );
             final recent = (events.valueOrNull ?? const <ReviewEventModel>[])
                 .where((event) => event.folder == selectedFolder)
                 .toList();

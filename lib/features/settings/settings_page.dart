@@ -10,6 +10,7 @@ import '../../core/network/api_config.dart';
 import '../../core/sync/sync_controller.dart';
 import '../../core/widgets/section_header.dart';
 import '../../core/widgets/status_badge.dart';
+import '../review/review_settings.dart';
 
 class SettingsPage extends ConsumerWidget {
   const SettingsPage({super.key});
@@ -21,6 +22,7 @@ class SettingsPage extends ConsumerWidget {
     final documents = ref.watch(documentsProvider).valueOrNull?.length ?? 0;
     final sync = ref.watch(syncControllerProvider);
     final scheme = Theme.of(context).colorScheme;
+    final reviewSettings = ref.watch(reviewSettingsProvider);
 
     return Scaffold(
       appBar: AppBar(title: const Text('我的')),
@@ -49,6 +51,33 @@ class SettingsPage extends ConsumerWidget {
           const SectionHeader(title: '同步', subtitle: '查看网络状态和待处理项目'),
           const SizedBox(height: 10),
           _SyncGroup(sync: sync, accountExists: account != null, ref: ref),
+          const SizedBox(height: 26),
+          const SectionHeader(title: '复习设置', subtitle: '调整 FSRS 每天加入复习计划的卡片数量'),
+          const SizedBox(height: 10),
+          _SettingsGroup(
+            children: [
+              _SettingsRow(
+                icon: Icons.school_outlined,
+                title: '每日新卡上限',
+                subtitle: '每天最多加入 ${reviewSettings.newCardsPerDay} 张未学习卡片',
+                trailing: const Icon(Icons.chevron_right_rounded),
+                enabled: account != null,
+                onTap: account == null
+                    ? null
+                    : () => _editLimit(context, ref, newCards: true),
+              ),
+              _SettingsRow(
+                icon: Icons.replay_outlined,
+                title: '每日复习上限',
+                subtitle: '每天最多加入 ${reviewSettings.reviewsPerDay} 张到期卡片',
+                trailing: const Icon(Icons.chevron_right_rounded),
+                enabled: account != null,
+                onTap: account == null
+                    ? null
+                    : () => _editLimit(context, ref, newCards: false),
+              ),
+            ],
+          ),
           const SizedBox(height: 26),
           const SectionHeader(title: '内容权限', subtitle: '当前移动端以阅读和复习为主'),
           const SizedBox(height: 10),
@@ -110,6 +139,56 @@ class SettingsPage extends ConsumerWidget {
         ],
       ),
     );
+  }
+
+  Future<void> _editLimit(
+    BuildContext context,
+    WidgetRef ref, {
+    required bool newCards,
+  }) async {
+    final settings = ref.read(reviewSettingsProvider);
+    final controller = TextEditingController(
+      text: '${newCards ? settings.newCardsPerDay : settings.reviewsPerDay}',
+    );
+    final value = await showDialog<int>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text(newCards ? '每日新卡上限' : '每日复习上限'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          keyboardType: TextInputType.number,
+          decoration: const InputDecoration(
+            labelText: '卡片数量',
+            helperText: '可填写 0 - 9999',
+          ),
+          onSubmitted: (_) {
+            final parsed = int.tryParse(controller.text);
+            if (parsed != null) Navigator.of(dialogContext).pop(parsed);
+          },
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () {
+              final parsed = int.tryParse(controller.text);
+              if (parsed != null) Navigator.of(dialogContext).pop(parsed);
+            },
+            child: const Text('保存'),
+          ),
+        ],
+      ),
+    );
+    controller.dispose();
+    if (value == null || !context.mounted) return;
+    if (newCards) {
+      await ref.read(reviewSettingsProvider.notifier).setNewCardsPerDay(value);
+    } else {
+      await ref.read(reviewSettingsProvider.notifier).setReviewsPerDay(value);
+    }
   }
 
   Future<void> _confirmLogout(BuildContext context, WidgetRef ref) async {
