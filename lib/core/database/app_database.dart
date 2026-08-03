@@ -1,0 +1,387 @@
+import 'dart:convert';
+
+import 'package:drift/drift.dart';
+import 'package:drift_flutter/drift_flutter.dart';
+
+import '../models/card_model.dart';
+import '../models/document_model.dart';
+
+part 'app_database.g.dart';
+
+class Cards extends Table {
+  TextColumn get id => text()();
+  TextColumn get accountId => text()();
+  TextColumn get type => text()();
+  TextColumn get folder => text()();
+  TextColumn get question => text()();
+  TextColumn get optionsJson => text()();
+  TextColumn get answerJson => text()();
+  TextColumn get noteContent => text().withDefault(const Constant(''))();
+  TextColumn get explanation => text().withDefault(const Constant(''))();
+  TextColumn get tagsJson => text()();
+  DateTimeColumn get dueAt => dateTime()();
+  DateTimeColumn get createdAt => dateTime()();
+  DateTimeColumn get updatedAt => dateTime()();
+  IntColumn get reviews => integer().withDefault(const Constant(0))();
+  TextColumn get mastery => text().withDefault(const Constant(''))();
+  BoolColumn get suspended => boolean().withDefault(const Constant(false))();
+  TextColumn get fsrsJson => text()();
+
+  @override
+  Set<Column<Object>> get primaryKey => {id, accountId};
+}
+
+class Documents extends Table {
+  TextColumn get id => text()();
+  TextColumn get accountId => text()();
+  TextColumn get folder => text()();
+  TextColumn get title => text()();
+  TextColumn get body => text()();
+  DateTimeColumn get updatedAt => dateTime()();
+
+  @override
+  Set<Column<Object>> get primaryKey => {id, accountId};
+}
+
+class ReviewEvents extends Table {
+  TextColumn get id => text()();
+  TextColumn get accountId => text()();
+  TextColumn get cardId => text()();
+  TextColumn get question => text()();
+  TextColumn get folder => text()();
+  TextColumn get rating => text()();
+  DateTimeColumn get reviewedAt => dateTime()();
+  DateTimeColumn get nextDue => dateTime()();
+
+  @override
+  Set<Column<Object>> get primaryKey => {id, accountId};
+}
+
+class SyncQueue extends Table {
+  TextColumn get id => text()();
+  TextColumn get accountId => text()();
+  TextColumn get objectType => text()();
+  TextColumn get objectId => text()();
+  IntColumn get objectVersion => integer().withDefault(const Constant(1))();
+  TextColumn get operation => text()();
+  TextColumn get payloadJson => text()();
+  TextColumn get status => text()();
+  IntColumn get attempts => integer().withDefault(const Constant(0))();
+  TextColumn get lastError => text().nullable()();
+  DateTimeColumn get createdAt => dateTime()();
+  DateTimeColumn get updatedAt => dateTime()();
+
+  @override
+  Set<Column<Object>> get primaryKey => {id, accountId};
+}
+
+@DriftDatabase(tables: [Cards, Documents, ReviewEvents, SyncQueue])
+class AppDatabase extends _$AppDatabase {
+  AppDatabase([QueryExecutor? executor])
+    : super(
+        executor ??
+            driftDatabase(
+              name: 'kncard_app',
+              web: DriftWebOptions(
+                sqlite3Wasm: Uri.parse('sqlite3.wasm'),
+                driftWorker: Uri.parse('drift_worker.js'),
+              ),
+            ),
+      );
+
+  @override
+  int get schemaVersion => 3;
+
+  @override
+  MigrationStrategy get migration => MigrationStrategy(
+    onCreate: (Migrator m) => m.createAll(),
+    onUpgrade: (Migrator m, int from, int to) async {
+      if (from < 2) {
+        await m.createTable(syncQueue);
+      } else if (from < 3) {
+        await m.addColumn(syncQueue, syncQueue.objectVersion);
+      }
+    },
+  );
+
+  Future<List<CardModel>> loadCards(String accountId) async {
+    final rows =
+        await (select(cards)
+              ..where((row) => row.accountId.equals(accountId))
+              ..orderBy([(row) => OrderingTerm(expression: row.dueAt)]))
+            .get();
+    return rows.map(_cardFromRow).toList();
+  }
+
+  Future<void> replaceCards(String accountId, List<CardModel> values) async {
+    await transaction(() async {
+      await (delete(
+        cards,
+      )..where((row) => row.accountId.equals(accountId))).go();
+      await batch((batch) {
+        batch.insertAll(cards, values.map(_cardToCompanion).toList());
+      });
+    });
+  }
+
+  Future<void> saveCard(CardModel value) =>
+      into(cards).insertOnConflictUpdate(_cardToCompanion(value));
+
+  Future<void> deleteCard(String id, String accountId) => (delete(
+    cards,
+  )..where((row) => row.id.equals(id) & row.accountId.equals(accountId))).go();
+
+  Future<List<DocumentModel>> loadDocuments(String accountId) async {
+    final rows =
+        await (select(documents)
+              ..where((row) => row.accountId.equals(accountId))
+              ..orderBy([(row) => OrderingTerm.desc(row.updatedAt)]))
+            .get();
+    return rows
+        .map(
+          (row) => DocumentModel(
+            id: row.id,
+            accountId: row.accountId,
+            folder: row.folder,
+            title: row.title,
+            body: row.body,
+            updatedAt: row.updatedAt,
+          ),
+        )
+        .toList();
+  }
+
+  Future<void> replaceDocuments(
+    String accountId,
+    List<DocumentModel> values,
+  ) async {
+    await transaction(() async {
+      await (delete(
+        documents,
+      )..where((row) => row.accountId.equals(accountId))).go();
+      await batch((batch) {
+        batch.insertAll(
+          documents,
+          values
+              .map(
+                (value) => DocumentsCompanion.insert(
+                  id: value.id,
+                  accountId: value.accountId,
+                  folder: value.folder,
+                  title: value.title,
+                  body: value.body,
+                  updatedAt: value.updatedAt,
+                ),
+              )
+              .toList(),
+        );
+      });
+    });
+  }
+
+  Future<void> saveDocument(DocumentModel value) =>
+      into(documents).insertOnConflictUpdate(
+        DocumentsCompanion.insert(
+          id: value.id,
+          accountId: value.accountId,
+          folder: value.folder,
+          title: value.title,
+          body: value.body,
+          updatedAt: value.updatedAt,
+        ),
+      );
+
+  Future<void> deleteDocument(String id, String accountId) => (delete(
+    documents,
+  )..where((row) => row.id.equals(id) & row.accountId.equals(accountId))).go();
+
+  Future<List<ReviewEventModel>> loadReviewEvents(String accountId) async {
+    final rows =
+        await (select(reviewEvents)
+              ..where((row) => row.accountId.equals(accountId))
+              ..orderBy([(row) => OrderingTerm.desc(row.reviewedAt)]))
+            .get();
+    return rows
+        .map(
+          (row) => ReviewEventModel(
+            id: row.id,
+            accountId: row.accountId,
+            cardId: row.cardId,
+            question: row.question,
+            folder: row.folder,
+            rating: ReviewRating.values.firstWhere(
+              (value) => value.name == row.rating,
+              orElse: () => ReviewRating.again,
+            ),
+            reviewedAt: row.reviewedAt,
+            nextDue: row.nextDue,
+          ),
+        )
+        .toList();
+  }
+
+  Future<void> saveReviewEvent(ReviewEventModel value) =>
+      into(reviewEvents).insert(
+        ReviewEventsCompanion.insert(
+          id: value.id,
+          accountId: value.accountId,
+          cardId: value.cardId,
+          question: value.question,
+          folder: value.folder,
+          rating: value.rating.name,
+          reviewedAt: value.reviewedAt,
+          nextDue: value.nextDue,
+        ),
+      );
+
+  Future<List<SyncQueueItemModel>> loadPendingSync(String accountId) async {
+    final rows =
+        await (select(syncQueue)
+              ..where(
+                (row) =>
+                    row.accountId.equals(accountId) &
+                    (row.status.equals('pending') |
+                        row.status.equals('failed')),
+              )
+              ..orderBy([(row) => OrderingTerm(expression: row.createdAt)]))
+            .get();
+    return rows.map(_syncFromRow).toList();
+  }
+
+  Future<int> countPendingSync(String accountId) async {
+    final rows = await loadPendingSync(accountId);
+    return rows.length;
+  }
+
+  Future<void> enqueueSync(SyncQueueItemModel value) =>
+      into(syncQueue).insertOnConflictUpdate(
+        SyncQueueCompanion.insert(
+          id: value.id,
+          accountId: value.accountId,
+          objectType: value.objectType,
+          objectId: value.objectId,
+          objectVersion: Value(value.objectVersion),
+          operation: value.operation.name,
+          payloadJson: value.payload,
+          status: value.status.name,
+          attempts: Value(value.attempts),
+          lastError: Value(value.lastError),
+          createdAt: value.createdAt,
+          updatedAt: value.updatedAt,
+        ),
+      );
+
+  Future<void> markSyncFailed(
+    String id,
+    String accountId,
+    String message,
+  ) async {
+    final row =
+        await (select(syncQueue)..where(
+              (value) =>
+                  value.id.equals(id) & value.accountId.equals(accountId),
+            ))
+            .getSingleOrNull();
+    if (row == null) return;
+    await (update(syncQueue)..where(
+          (value) => value.id.equals(id) & value.accountId.equals(accountId),
+        ))
+        .write(
+          SyncQueueCompanion(
+            status: const Value('failed'),
+            attempts: Value(row.attempts + 1),
+            lastError: Value(message),
+            updatedAt: Value(DateTime.now()),
+          ),
+        );
+  }
+
+  Future<void> markSyncSynced(String id, String accountId) =>
+      (update(syncQueue)..where(
+            (value) => value.id.equals(id) & value.accountId.equals(accountId),
+          ))
+          .write(const SyncQueueCompanion(status: Value('synced')));
+
+  SyncQueueItemModel _syncFromRow(SyncQueueData row) => SyncQueueItemModel(
+    id: row.id,
+    accountId: row.accountId,
+    objectType: row.objectType,
+    objectId: row.objectId,
+    objectVersion: row.objectVersion,
+    operation: SyncOperation.values.firstWhere(
+      (value) => value.name == row.operation,
+      orElse: () => SyncOperation.upsert,
+    ),
+    payload: row.payloadJson,
+    status: SyncItemStatus.values.firstWhere(
+      (value) => value.name == row.status,
+      orElse: () => SyncItemStatus.pending,
+    ),
+    attempts: row.attempts,
+    lastError: row.lastError,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  );
+
+  CardModel _cardFromRow(Card row) {
+    final fsrs = jsonDecode(row.fsrsJson) as Map<String, dynamic>;
+    return CardModel(
+      id: row.id,
+      accountId: row.accountId,
+      type: CardType.values.firstWhere(
+        (value) => value.name == row.type,
+        orElse: () => CardType.single,
+      ),
+      folder: row.folder,
+      question: row.question,
+      options: Map<String, String>.from(jsonDecode(row.optionsJson) as Map),
+      answer: List<String>.from(jsonDecode(row.answerJson) as List),
+      noteContent: row.noteContent,
+      explanation: row.explanation,
+      tags: List<String>.from(jsonDecode(row.tagsJson) as List),
+      dueAt: row.dueAt,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+      reviews: row.reviews,
+      mastery: row.mastery,
+      suspended: row.suspended,
+      fsrs: FsrsSnapshot(
+        state: FsrsState.values.firstWhere(
+          (value) => value.name == fsrs['state'],
+        ),
+        dueAt: DateTime.parse(fsrs['dueAt'] as String),
+        stability: (fsrs['stability'] as num).toDouble(),
+        difficulty: (fsrs['difficulty'] as num).toDouble(),
+        reps: fsrs['reps'] as int,
+        lapses: fsrs['lapses'] as int,
+      ),
+    );
+  }
+
+  CardsCompanion _cardToCompanion(CardModel value) => CardsCompanion.insert(
+    id: value.id,
+    accountId: value.accountId,
+    type: value.type.name,
+    folder: value.folder,
+    question: value.question,
+    optionsJson: jsonEncode(value.options),
+    answerJson: jsonEncode(value.answer),
+    noteContent: Value(value.noteContent),
+    explanation: Value(value.explanation),
+    tagsJson: jsonEncode(value.tags),
+    dueAt: value.dueAt,
+    createdAt: value.createdAt,
+    updatedAt: value.updatedAt,
+    reviews: Value(value.reviews),
+    mastery: Value(value.mastery),
+    suspended: Value(value.suspended),
+    fsrsJson: jsonEncode({
+      'state': value.fsrs.state.name,
+      'dueAt': value.fsrs.dueAt.toIso8601String(),
+      'stability': value.fsrs.stability,
+      'difficulty': value.fsrs.difficulty,
+      'reps': value.fsrs.reps,
+      'lapses': value.fsrs.lapses,
+    }),
+  );
+}
