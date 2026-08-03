@@ -7,7 +7,6 @@ import '../../core/models/card_model.dart';
 import '../../core/widgets/empty_state.dart';
 import '../../core/widgets/markdown_content.dart';
 import '../../core/widgets/stat_tile.dart';
-import '../../core/widgets/status_badge.dart';
 
 class StudyPage extends ConsumerStatefulWidget {
   const StudyPage({this.selectedFolder, super.key});
@@ -27,6 +26,7 @@ class _StudyPageState extends ConsumerState<StudyPage> {
   int _completed = 0;
   final _ratingCounts = <ReviewRating, int>{};
   List<String>? _queueIds;
+  bool _favorite = false;
 
   @override
   Widget build(BuildContext context) {
@@ -37,55 +37,55 @@ class _StudyPageState extends ConsumerState<StudyPage> {
         if (!didPop) _confirmExit();
       },
       child: Scaffold(
-        appBar: AppBar(
-          title: const Text('复习中'),
-          leading: IconButton(
-            onPressed: _confirmExit,
-            tooltip: '退出复习',
-            icon: const Icon(Icons.close),
+        backgroundColor: const Color(0xfffcfdfb),
+        body: SafeArea(
+          bottom: false,
+          child: cards.when(
+            loading: () => const Center(child: CircularProgressIndicator()),
+            error: (error, _) =>
+                _StudyError(onRetry: () => ref.invalidate(cardsProvider)),
+            data: (values) {
+              final due = values
+                  .where(
+                    (card) =>
+                        card.isDue &&
+                        (widget.selectedFolder == null ||
+                            card.folder == widget.selectedFolder),
+                  )
+                  .toList();
+              _queueIds ??= due.map((card) => card.id).toList();
+              final cardsById = {for (final card in values) card.id: card};
+              final queue = _queueIds!
+                  .map((id) => cardsById[id])
+                  .whereType<CardModel>()
+                  .toList();
+              if (queue.isEmpty || _index >= queue.length) {
+                return _Finished(completed: _completed, counts: _ratingCounts);
+              }
+              final card = queue[_index];
+              final previews = {
+                for (final rating in ReviewRating.values)
+                  rating: _nextDueLabel(card, rating),
+              };
+              return _StudyCard(
+                card: card,
+                index: _index,
+                total: queue.length,
+                selected: _selected,
+                answered: _answered,
+                rating: _rating,
+                saving: _saving,
+                previews: previews,
+                favorite: _favorite,
+                onExit: _confirmExit,
+                onToggleFavorite: () => setState(() => _favorite = !_favorite),
+                onOpenAnswerCard: () => _showAnswerCard(queue),
+                onSelect: (key) => _select(card, key),
+                onSubmit: () => _submitAnswer(card),
+                onRate: (rating) => _rate(card, rating),
+              );
+            },
           ),
-        ),
-        body: cards.when(
-          loading: () => const Center(child: CircularProgressIndicator()),
-          error: (error, _) =>
-              _StudyError(onRetry: () => ref.invalidate(cardsProvider)),
-          data: (values) {
-            final due = values
-                .where(
-                  (card) =>
-                      card.isDue &&
-                      (widget.selectedFolder == null ||
-                          card.folder == widget.selectedFolder),
-                )
-                .toList();
-            _queueIds ??= due.map((card) => card.id).toList();
-            final cardsById = {for (final card in values) card.id: card};
-            final queue = _queueIds!
-                .map((id) => cardsById[id])
-                .whereType<CardModel>()
-                .toList();
-            if (queue.isEmpty || _index >= queue.length) {
-              return _Finished(completed: _completed, counts: _ratingCounts);
-            }
-            final card = queue[_index];
-            final previews = {
-              for (final rating in ReviewRating.values)
-                rating: _nextDueLabel(card, rating),
-            };
-            return _StudyCard(
-              card: card,
-              index: _index,
-              total: queue.length,
-              selected: _selected,
-              answered: _answered,
-              rating: _rating,
-              saving: _saving,
-              previews: previews,
-              onSelect: (key) => _select(card, key),
-              onSubmit: () => _submitAnswer(card),
-              onRate: (rating) => _rate(card, rating),
-            );
-          },
         ),
       ),
     );
@@ -171,6 +171,89 @@ class _StudyPageState extends ConsumerState<StudyPage> {
     }
   }
 
+  Future<void> _showAnswerCard(List<CardModel> queue) async {
+    if (!mounted) return;
+    await showModalBottomSheet<void>(
+      context: context,
+      useSafeArea: true,
+      backgroundColor: Colors.white,
+      builder: (sheetContext) => SafeArea(
+        child: SizedBox(
+          height: MediaQuery.of(sheetContext).size.height * 0.68,
+          child: Column(
+            children: [
+              const Padding(
+                padding: EdgeInsets.fromLTRB(20, 8, 20, 12),
+                child: Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    '答题卡',
+                    style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700),
+                  ),
+                ),
+              ),
+              Expanded(
+                child: ListView.separated(
+                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 20),
+                  itemCount: queue.length,
+                  separatorBuilder: (_, _) => const SizedBox(height: 8),
+                  itemBuilder: (context, itemIndex) {
+                    final item = queue[itemIndex];
+                    final current = itemIndex == _index;
+                    return ListTile(
+                      onTap: () {
+                        Navigator.of(sheetContext).pop();
+                        if (!mounted || current) return;
+                        setState(() {
+                          _index = itemIndex;
+                          _selected.clear();
+                          _answered = false;
+                          _rating = null;
+                        });
+                      },
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(14),
+                      ),
+                      tileColor: current
+                          ? const Color(0xffeef8ec)
+                          : const Color(0xfff8faf9),
+                      leading: CircleAvatar(
+                        radius: 18,
+                        backgroundColor: current
+                            ? const Color(0xff159515)
+                            : const Color(0xffe8eeeb),
+                        child: Text(
+                          '${itemIndex + 1}',
+                          style: TextStyle(
+                            color: current
+                                ? Colors.white
+                                : const Color(0xff61716a),
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                      ),
+                      title: Text(
+                        item.question.replaceAll(RegExp(r'\s+'), ' '),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      trailing: current
+                          ? const Icon(
+                              Icons.radio_button_checked,
+                              color: Color(0xff159515),
+                            )
+                          : const Icon(Icons.chevron_right_rounded),
+                    );
+                  },
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   String _nextDueLabel(CardModel card, ReviewRating rating) {
     final next = ref
         .read(reviewEngineProvider)
@@ -220,6 +303,10 @@ class _StudyCard extends StatelessWidget {
     required this.rating,
     required this.saving,
     required this.previews,
+    required this.favorite,
+    required this.onExit,
+    required this.onToggleFavorite,
+    required this.onOpenAnswerCard,
     required this.onSelect,
     required this.onSubmit,
     required this.onRate,
@@ -233,6 +320,10 @@ class _StudyCard extends StatelessWidget {
   final ReviewRating? rating;
   final bool saving;
   final Map<ReviewRating, String> previews;
+  final bool favorite;
+  final VoidCallback onExit;
+  final VoidCallback onToggleFavorite;
+  final VoidCallback onOpenAnswerCard;
   final ValueChanged<String> onSelect;
   final VoidCallback onSubmit;
   final ValueChanged<ReviewRating> onRate;
@@ -244,98 +335,186 @@ class _StudyCard extends StatelessWidget {
         selected.containsAll(card.answer);
     return Column(
       children: [
-        Padding(
-          padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
-          child: Column(
+        SizedBox(
+          height: 156,
+          child: Stack(
+            clipBehavior: Clip.none,
             children: [
-              Row(
-                children: [
-                  Text(
-                    '${index + 1} / $total',
-                    style: Theme.of(context).textTheme.titleMedium,
-                  ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Text(
-                      card.folder,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: Theme.of(context).textTheme.bodySmall,
+              Positioned(
+                right: -18,
+                top: -28,
+                width: 154,
+                height: 218,
+                child: IgnorePointer(
+                  child: Opacity(
+                    opacity: 0.32,
+                    child: Image.asset(
+                      'assets/review_leaves.jpg',
+                      fit: BoxFit.contain,
+                      filterQuality: FilterQuality.medium,
                     ),
                   ),
-                  StatusBadge(
-                    label: card.type.label,
-                    icon: _typeIcon(card.type),
-                  ),
-                ],
+                ),
               ),
-              const SizedBox(height: 12),
-              ClipRRect(
-                borderRadius: BorderRadius.circular(4),
-                child: LinearProgressIndicator(
-                  minHeight: 6,
-                  value: total == 0 ? 0 : (index + 1) / total,
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 4, 16, 0),
+                child: Column(
+                  children: [
+                    Row(
+                      children: [
+                        IconButton(
+                          onPressed: onExit,
+                          tooltip: '退出复习',
+                          padding: EdgeInsets.zero,
+                          constraints: const BoxConstraints.tightFor(
+                            width: 42,
+                            height: 42,
+                          ),
+                          icon: const Icon(
+                            Icons.arrow_back_ios_new_rounded,
+                            size: 25,
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        const Expanded(
+                          child: Text(
+                            '复习中',
+                            style: TextStyle(
+                              color: Color(0xff101311),
+                              fontSize: 27,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                        ),
+                        _TypePill(label: card.type.label),
+                      ],
+                    ),
+                    const SizedBox(height: 13),
+                    Row(
+                      children: [
+                        Text(
+                          '${index + 1} / $total',
+                          style: const TextStyle(
+                            color: Color(0xff159515),
+                            fontSize: 27,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                        const SizedBox(width: 14),
+                        Expanded(
+                          child: Text(
+                            card.folder,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              color: Color(0xff101311),
+                              fontSize: 18,
+                              fontWeight: FontWeight.w400,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 11),
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(8),
+                      child: LinearProgressIndicator(
+                        minHeight: 7,
+                        value: total == 0 ? 0 : (index + 1) / total,
+                        backgroundColor: const Color(0xffe6ebe8),
+                        valueColor: const AlwaysStoppedAnimation<Color>(
+                          Color(0xff159515),
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
               ),
             ],
           ),
         ),
         Expanded(
-          child: ListView(
-            padding: const EdgeInsets.fromLTRB(16, 8, 16, 20),
-            children: [
-              MarkdownContent(
-                data: card.question,
-                selectable: true,
-                textStyle: Theme.of(
-                  context,
-                ).textTheme.titleLarge?.copyWith(fontSize: 20, height: 1.45),
-              ),
-              if (card.type == CardType.note) ...[
-                const SizedBox(height: 18),
-                _ContentPanel(
-                  icon: Icons.lightbulb_outline,
-                  child: MarkdownContent(
-                    data: card.noteContent,
-                    noteEntries: true,
-                  ),
+          child: Container(
+            margin: const EdgeInsets.fromLTRB(16, 8, 16, 12),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(25),
+              boxShadow: const [
+                BoxShadow(
+                  color: Color(0x10000000),
+                  blurRadius: 20,
+                  offset: Offset(0, 8),
                 ),
-              ] else ...[
-                const SizedBox(height: 20),
-                ...card.options.entries.map(
-                  (entry) => Padding(
-                    padding: const EdgeInsets.only(bottom: 10),
-                    child: _OptionTile(
-                      entry: entry,
-                      selected: selected.contains(entry.key),
-                      answered: answered,
-                      isCorrect: card.answer.contains(entry.key),
-                      onTap: () => onSelect(entry.key),
-                    ),
-                  ),
-                ),
-                if (answered) ...[
-                  const SizedBox(height: 8),
-                  _AnswerFeedback(isCorrect: isCorrect),
-                ],
               ],
-              if (answered || card.type == CardType.note) ...[
-                if (card.explanation.isNotEmpty) ...[
+            ),
+            child: ListView(
+              padding: const EdgeInsets.fromLTRB(22, 25, 22, 24),
+              children: [
+                MarkdownContent(
+                  data: card.question,
+                  selectable: true,
+                  textStyle: const TextStyle(
+                    color: Color(0xff101311),
+                    fontSize: 20,
+                    height: 1.65,
+                    fontWeight: FontWeight.w400,
+                  ),
+                ),
+                if (card.type == CardType.note) ...[
                   const SizedBox(height: 18),
                   _ContentPanel(
-                    icon: Icons.menu_book_outlined,
-                    title: '解析',
-                    child: MarkdownContent(data: card.explanation),
+                    icon: Icons.lightbulb_outline,
+                    child: MarkdownContent(
+                      data: card.noteContent,
+                      noteEntries: true,
+                    ),
+                  ),
+                ] else ...[
+                  const SizedBox(height: 12),
+                  ...card.options.entries.map(
+                    (entry) => Padding(
+                      padding: const EdgeInsets.only(bottom: 12),
+                      child: _OptionTile(
+                        entry: entry,
+                        selected: selected.contains(entry.key),
+                        answered: answered,
+                        isCorrect: card.answer.contains(entry.key),
+                        onTap: () => onSelect(entry.key),
+                      ),
+                    ),
+                  ),
+                  if (answered) ...[
+                    const SizedBox(height: 4),
+                    _AnswerFeedback(isCorrect: isCorrect),
+                  ],
+                ],
+                if (answered || card.type == CardType.note) ...[
+                  if (card.explanation.isNotEmpty) ...[
+                    const SizedBox(height: 18),
+                    _ContentPanel(
+                      icon: Icons.menu_book_outlined,
+                      title: '解析',
+                      child: MarkdownContent(data: card.explanation),
+                    ),
+                  ],
+                  const SizedBox(height: 12),
+                  const Text(
+                    '根据记忆感受评分',
+                    style: TextStyle(color: Color(0xff68746f), fontSize: 13),
                   ),
                 ],
-                const SizedBox(height: 12),
-                Text('根据记忆感受评分', style: Theme.of(context).textTheme.bodySmall),
               ],
-            ],
+            ),
           ),
         ),
         if (card.type != CardType.note && !answered)
-          _SubmitBar(enabled: selected.isNotEmpty, onSubmit: onSubmit)
+          _SubmitBar(
+            enabled: selected.isNotEmpty,
+            favorite: favorite,
+            onToggleFavorite: onToggleFavorite,
+            onOpenAnswerCard: onOpenAnswerCard,
+            onSubmit: onSubmit,
+          )
         else
           _RatingBar(
             rating: rating,
@@ -346,15 +525,40 @@ class _StudyCard extends StatelessWidget {
       ],
     );
   }
+}
 
-  IconData _typeIcon(CardType type) {
-    return switch (type) {
-      CardType.single => Icons.radio_button_checked,
-      CardType.multiple => Icons.check_box_outlined,
-      CardType.trueFalse => Icons.rule,
-      CardType.note => Icons.lightbulb_outline,
-    };
-  }
+class _TypePill extends StatelessWidget {
+  const _TypePill({required this.label});
+
+  final String label;
+
+  @override
+  Widget build(BuildContext context) => Container(
+    padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 10),
+    decoration: BoxDecoration(
+      color: const Color(0xfff3f7f5),
+      borderRadius: BorderRadius.circular(24),
+    ),
+    child: Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        const Icon(
+          Icons.radio_button_checked,
+          size: 21,
+          color: Color(0xff101311),
+        ),
+        const SizedBox(width: 8),
+        Text(
+          label,
+          style: const TextStyle(
+            color: Color(0xff101311),
+            fontSize: 16,
+            fontWeight: FontWeight.w500,
+          ),
+        ),
+      ],
+    ),
+  );
 }
 
 class _OptionTile extends StatelessWidget {
@@ -374,75 +578,87 @@ class _OptionTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
     final isWrongSelection = answered && selected && !isCorrect;
     final isCorrectAnswer = answered && isCorrect;
-    final borderColor = isCorrectAnswer
-        ? scheme.primary
+    final accent = isCorrectAnswer
+        ? const Color(0xff159515)
         : isWrongSelection
-        ? scheme.error
-        : selected
-        ? scheme.primary
-        : scheme.outline;
-    final backgroundColor = isCorrectAnswer
-        ? scheme.primaryContainer
+        ? const Color(0xffc53b32)
+        : const Color(0xffd7e3df);
+    final selectedBorder = selected && !answered
+        ? const Color(0xff159515)
+        : accent;
+    final background = isCorrectAnswer
+        ? const Color(0xffeef8ec)
         : isWrongSelection
-        ? scheme.errorContainer
+        ? const Color(0xfffff1ef)
+        : Colors.white;
+    final icon = isCorrectAnswer
+        ? Icons.check_circle
+        : isWrongSelection
+        ? Icons.cancel
         : selected
-        ? scheme.primaryContainer.withValues(alpha: 0.6)
-        : scheme.surface;
+        ? Icons.radio_button_checked
+        : Icons.radio_button_unchecked;
+
     return Semantics(
       button: true,
       selected: selected,
       label: '选项 ${entry.key}：${entry.value}',
       child: Material(
-        color: backgroundColor,
-        borderRadius: BorderRadius.circular(12),
+        color: background,
+        elevation: 1.5,
+        shadowColor: const Color(0x10000000),
+        borderRadius: BorderRadius.circular(18),
         child: InkWell(
           onTap: answered ? null : onTap,
-          borderRadius: BorderRadius.circular(12),
-          child: Container(
-            constraints: const BoxConstraints(minHeight: 64),
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+          borderRadius: BorderRadius.circular(18),
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 160),
+            constraints: const BoxConstraints(minHeight: 72),
+            padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 13),
             decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(12),
+              borderRadius: BorderRadius.circular(18),
               border: Border.all(
-                color: borderColor,
+                color: selectedBorder,
                 width: selected || answered ? 1.5 : 1,
               ),
             ),
             child: Row(
               children: [
                 Container(
-                  width: 32,
-                  height: 32,
+                  width: 40,
+                  height: 40,
                   alignment: Alignment.center,
                   decoration: BoxDecoration(
-                    color: borderColor.withValues(alpha: 0.12),
+                    color: selected || answered
+                        ? accent.withValues(alpha: 0.14)
+                        : const Color(0xfff2f5f3),
                     shape: BoxShape.circle,
                   ),
                   child: Text(
                     entry.key,
-                    style: Theme.of(
-                      context,
-                    ).textTheme.titleMedium?.copyWith(color: borderColor),
+                    style: const TextStyle(
+                      color: Color(0xff68746f),
+                      fontSize: 20,
+                      fontWeight: FontWeight.w500,
+                    ),
                   ),
                 ),
-                const SizedBox(width: 12),
+                const SizedBox(width: 14),
                 Expanded(
-                  child: MarkdownContent(data: entry.value, selectable: false),
+                  child: MarkdownContent(
+                    data: entry.value,
+                    selectable: false,
+                    textStyle: const TextStyle(
+                      color: Color(0xff101311),
+                      fontSize: 18,
+                      height: 1.35,
+                    ),
+                  ),
                 ),
-                const SizedBox(width: 8),
-                Icon(
-                  isCorrectAnswer
-                      ? Icons.check_circle
-                      : isWrongSelection
-                      ? Icons.cancel
-                      : selected
-                      ? Icons.radio_button_checked
-                      : Icons.radio_button_unchecked,
-                  color: borderColor,
-                ),
+                const SizedBox(width: 10),
+                Icon(icon, color: selectedBorder, size: 30),
               ],
             ),
           ),
@@ -526,24 +742,109 @@ class _ContentPanel extends StatelessWidget {
 }
 
 class _SubmitBar extends StatelessWidget {
-  const _SubmitBar({required this.enabled, required this.onSubmit});
+  const _SubmitBar({
+    required this.enabled,
+    required this.favorite,
+    required this.onToggleFavorite,
+    required this.onOpenAnswerCard,
+    required this.onSubmit,
+  });
 
   final bool enabled;
+  final bool favorite;
+  final VoidCallback onToggleFavorite;
+  final VoidCallback onOpenAnswerCard;
   final VoidCallback onSubmit;
 
   @override
-  Widget build(BuildContext context) {
-    return _BottomActionSurface(
-      child: SizedBox(
-        width: double.infinity,
-        child: FilledButton.icon(
-          onPressed: enabled ? onSubmit : null,
-          icon: const Icon(Icons.check),
-          label: const Text('提交答案'),
+  Widget build(BuildContext context) => _BottomActionSurface(
+    child: Row(
+      children: [
+        _StudyActionButton(
+          icon: favorite ? Icons.star_rounded : Icons.star_border_rounded,
+          label: '收藏',
+          active: favorite,
+          onPressed: onToggleFavorite,
+        ),
+        const SizedBox(width: 16),
+        Expanded(
+          child: SizedBox(
+            height: 60,
+            child: FilledButton(
+              onPressed: enabled ? onSubmit : null,
+              style: FilledButton.styleFrom(
+                backgroundColor: const Color(0xff009b3a),
+                disabledBackgroundColor: const Color(0xffcbd7d1),
+                foregroundColor: Colors.white,
+                disabledForegroundColor: Colors.white,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(18),
+                ),
+                textStyle: const TextStyle(
+                  fontSize: 20,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+              child: const Text('提交答案'),
+            ),
+          ),
+        ),
+        const SizedBox(width: 16),
+        _StudyActionButton(
+          icon: Icons.ballot_outlined,
+          label: '答题卡',
+          onPressed: onOpenAnswerCard,
+        ),
+      ],
+    ),
+  );
+}
+
+class _StudyActionButton extends StatelessWidget {
+  const _StudyActionButton({
+    required this.icon,
+    required this.label,
+    required this.onPressed,
+    this.active = false,
+  });
+
+  final IconData icon;
+  final String label;
+  final VoidCallback onPressed;
+  final bool active;
+
+  @override
+  Widget build(BuildContext context) => SizedBox(
+    width: 66,
+    height: 68,
+    child: Material(
+      color: active ? const Color(0xffeef8ec) : const Color(0xfff3f7f5),
+      borderRadius: BorderRadius.circular(18),
+      child: InkWell(
+        onTap: onPressed,
+        borderRadius: BorderRadius.circular(18),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(
+              icon,
+              size: 28,
+              color: active ? const Color(0xff159515) : const Color(0xff789088),
+            ),
+            const SizedBox(height: 2),
+            Text(
+              label,
+              style: TextStyle(
+                color: const Color(0xff101311),
+                fontSize: 14,
+                fontWeight: active ? FontWeight.w700 : FontWeight.w500,
+              ),
+            ),
+          ],
         ),
       ),
-    );
-  }
+    ),
+  );
 }
 
 class _RatingBar extends StatelessWidget {
@@ -685,20 +986,16 @@ class _BottomActionSurface extends StatelessWidget {
   final Widget child;
 
   @override
-  Widget build(BuildContext context) {
-    return Material(
-      color: Theme.of(context).colorScheme.surface,
-      elevation: 6,
-      shadowColor: Colors.black.withValues(alpha: 0.12),
-      child: SafeArea(
-        top: false,
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(16, 10, 16, 10),
-          child: child,
-        ),
+  Widget build(BuildContext context) => Material(
+    color: Colors.white,
+    child: SafeArea(
+      top: false,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 8, 16, 10),
+        child: child,
       ),
-    );
-  }
+    ),
+  );
 }
 
 class _Finished extends StatelessWidget {
