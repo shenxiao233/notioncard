@@ -1,4 +1,4 @@
-﻿import 'dart:math' as math;
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -45,7 +45,10 @@ class ReviewHomePage extends ConsumerWidget {
             final streakDays = _streakDays(recent);
             final todayProgress = due.isEmpty
                 ? 0
-                : (completedToday / due.length * 100).round().clamp(0, 100).toInt();
+                : (completedToday / due.length * 100)
+                      .round()
+                      .clamp(0, 100)
+                      .toInt();
             final completed = values.isEmpty
                 ? 0
                 : (reviewed / values.length * 5).round().clamp(0, 5).toInt();
@@ -75,9 +78,7 @@ class ReviewHomePage extends ConsumerWidget {
                             streakDays: streakDays,
                             todayProgress: todayProgress,
                             compact: compact,
-                            onStart: due.isEmpty
-                                ? () {}
-                                : () => _openStudyPicker(context, values),
+                            onStart: () => context.push('/review/study'),
                           ),
                           SizedBox(height: compact ? 10 : 12),
                           _ProgressSection(
@@ -114,56 +115,25 @@ class ReviewHomePage extends ConsumerWidget {
     await ref.read(reviewEventsProvider.future);
   }
 
-  Future<void> _openStudyPicker(
-    BuildContext context,
-    List<CardModel> cards,
-  ) async {
-    final dueCards = cards.where((card) => card.isDue).toList();
-    final folders =
-        dueCards
-            .map((card) => card.folder.trim())
-            .where((folder) => folder.isNotEmpty)
-            .toSet()
-            .toList()
-          ..sort();
-    final selected = await showModalBottomSheet<String?>(
-      context: context,
-      showDragHandle: true,
-      isScrollControlled: true,
-      useSafeArea: true,
-      builder: (context) => _ReviewDeckPicker(
-        folders: folders,
-        folderCounts: {
-          for (final folder in folders)
-            folder: dueCards
-                .where((card) => card.folder.trim() == folder)
-                .length,
-        },
-        dueCount: dueCards.length,
-      ),
-    );
-    if (!context.mounted || selected == null) return;
-    final query = selected.isEmpty
-        ? ''
-        : '?folder=${Uri.encodeQueryComponent(selected)}';
-    context.push('/review/study$query');
-  }
-
   static bool _sameDay(DateTime left, DateTime right) =>
       left.year == right.year &&
       left.month == right.month &&
       left.day == right.day;
   static int _streakDays(List<ReviewEventModel> events) {
     final reviewedDays = events
-        .map((event) => DateTime(
-              event.reviewedAt.year,
-              event.reviewedAt.month,
-              event.reviewedAt.day,
-            ))
+        .map(
+          (event) => DateTime(
+            event.reviewedAt.year,
+            event.reviewedAt.month,
+            event.reviewedAt.day,
+          ),
+        )
         .toSet();
     var cursor = DateTime.now();
     var streak = 0;
-    while (reviewedDays.contains(DateTime(cursor.year, cursor.month, cursor.day))) {
+    while (reviewedDays.contains(
+      DateTime(cursor.year, cursor.month, cursor.day),
+    )) {
       streak++;
       cursor = cursor.subtract(const Duration(days: 1));
     }
@@ -480,6 +450,7 @@ class _DailyStat extends StatelessWidget {
     ],
   );
 }
+
 class _PlanCount extends StatelessWidget {
   const _PlanCount({required this.count, required this.compact});
 
@@ -522,6 +493,7 @@ class _PlanCount extends StatelessWidget {
     );
   }
 }
+
 class _StartButton extends StatelessWidget {
   const _StartButton({required this.compact, required this.onPressed});
 
@@ -727,6 +699,7 @@ class _ProgressSection extends StatelessWidget {
     ),
   );
 }
+
 class _MotivationBanner extends StatelessWidget {
   const _MotivationBanner({
     required this.completedToday,
@@ -818,71 +791,6 @@ class _MotivationBanner extends StatelessWidget {
     if (completedToday > 0) return '今天已经完成 $completedToday 张，\n继续保持这份节奏！';
     return '每天进步一点点，\n未来的你会感谢现在的努力！';
   }
-}
-class _ReviewDeckPicker extends StatelessWidget {
-  const _ReviewDeckPicker({
-    required this.folders,
-    required this.folderCounts,
-    required this.dueCount,
-  });
-
-  final List<String> folders;
-  final Map<String, int> folderCounts;
-  final int dueCount;
-
-  @override
-  Widget build(BuildContext context) => SizedBox(
-    height: (MediaQuery.sizeOf(context).height * 0.72).clamp(220.0, 620.0),
-    child: ListView(
-      padding: const EdgeInsets.fromLTRB(20, 4, 20, 24),
-      children: [
-        Text('选择复习牌组', style: Theme.of(context).textTheme.titleLarge),
-        const SizedBox(height: 4),
-        Text(
-          '默认复习全部到期卡片，也可以只复习一个牌组。',
-          style: Theme.of(context).textTheme.bodySmall,
-        ),
-        const SizedBox(height: 12),
-        _ReviewDeckChoice(
-          title: '全部牌组',
-          count: dueCount,
-          icon: Icons.all_inclusive,
-          onTap: () => Navigator.of(context).pop(''),
-        ),
-        for (final folder in folders)
-          _ReviewDeckChoice(
-            title: folder,
-            count: folderCounts[folder] ?? 0,
-            icon: Icons.folder_outlined,
-            onTap: () => Navigator.of(context).pop(folder),
-          ),
-      ],
-    ),
-  );
-}
-
-class _ReviewDeckChoice extends StatelessWidget {
-  const _ReviewDeckChoice({
-    required this.title,
-    required this.count,
-    required this.icon,
-    required this.onTap,
-  });
-
-  final String title;
-  final int count;
-  final IconData icon;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) => ListTile(
-    contentPadding: EdgeInsets.zero,
-    leading: Icon(icon),
-    title: Text(title),
-    subtitle: Text('$count 张到期卡片'),
-    trailing: const Icon(Icons.chevron_right),
-    onTap: onTap,
-  );
 }
 
 class _ReviewError extends StatelessWidget {
@@ -1028,10 +936,7 @@ class _ProgressLinePainter extends CustomPainter {
           ),
           textDirection: TextDirection.ltr,
         )..layout();
-        label.paint(
-          canvas,
-          point - Offset(label.width / 2, label.height / 2),
-        );
+        label.paint(canvas, point - Offset(label.width / 2, label.height / 2));
       }
     }
   }
