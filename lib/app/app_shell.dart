@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../core/widgets/app_brand.dart';
+import 'app_theme.dart';
 
 class AppShell extends ConsumerWidget {
   const AppShell({required this.child, super.key});
@@ -36,26 +37,34 @@ class _BottomNavigationBar extends StatelessWidget {
   final int selectedIndex;
 
   static const _items = <(IconData, IconData, String, String)>[
-    (Icons.school_outlined, Icons.school, '复习', '/review'),
-    (Icons.menu_book_outlined, Icons.menu_book, '学习库', '/library'),
-    (Icons.style_outlined, Icons.style, '卡片', '/cards'),
-    (Icons.storefront_outlined, Icons.storefront, '市场', '/market'),
-    (Icons.person_outline, Icons.person, '我的', '/settings'),
+    (Icons.home_outlined, Icons.home_rounded, '首页', '/review'),
+    (Icons.schedule_outlined, Icons.schedule_rounded, '学习库', '/library'),
+    (Icons.favorite_border_rounded, Icons.favorite_rounded, '卡片', '/cards'),
+    (Icons.storefront_outlined, Icons.storefront_rounded, '市场', '/market'),
+    (Icons.person_outline_rounded, Icons.person_rounded, '我的', '/settings'),
   ];
 
   @override
   Widget build(BuildContext context) {
-    return Material(
-      color: Colors.white,
-      child: SafeArea(
-        top: false,
-        child: SizedBox(
-          height: 82,
-          child: Row(
-            children: [
-              for (var index = 0; index < _items.length; index++)
-                Expanded(child: _item(context, index, _items[index])),
-            ],
+    return SafeArea(
+      top: false,
+      minimum: const EdgeInsets.fromLTRB(18, 0, 18, 12),
+      child: SizedBox(
+        height: 88,
+        child: Material(
+          color: AppTheme.background,
+          elevation: 10,
+          shadowColor: const Color(0x26000000),
+          borderRadius: BorderRadius.circular(32),
+          clipBehavior: Clip.antiAlias,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+            child: Row(
+              children: [
+                for (var index = 0; index < _items.length; index++)
+                  Expanded(child: _item(context, index, _items[index])),
+              ],
+            ),
           ),
         ),
       ),
@@ -68,39 +77,55 @@ class _BottomNavigationBar extends StatelessWidget {
     (IconData, IconData, String, String) item,
   ) {
     final selected = index == selectedIndex;
-    return Tooltip(
-      message: item.$3,
-      child: InkWell(
-        onTap: () => context.go(item.$4),
-        borderRadius: BorderRadius.circular(18),
-        child: Center(
-          child: AnimatedContainer(
-            duration: const Duration(milliseconds: 180),
-            width: 72,
-            height: 66,
-            decoration: BoxDecoration(
-              color: selected ? const Color(0xfff1f8ef) : Colors.transparent,
-              borderRadius: BorderRadius.circular(18),
-            ),
+    return Semantics(
+      button: true,
+      selected: selected,
+      label: item.$3,
+      child: Tooltip(
+        message: item.$3,
+        child: InkWell(
+          onTap: selected ? null : () => context.go(item.$4),
+          borderRadius: BorderRadius.circular(24),
+          child: SizedBox(
+            height: 72,
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                Icon(
-                  selected ? item.$2 : item.$1,
-                  color: selected
-                      ? const Color(0xff2f8d25)
-                      : const Color(0xff777b78),
-                  size: 29,
+                AnimatedSwitcher(
+                  duration: const Duration(milliseconds: 160),
+                  transitionBuilder: (child, animation) =>
+                      ScaleTransition(scale: animation, child: child),
+                  child: Icon(
+                    selected ? item.$2 : item.$1,
+                    key: ValueKey(selected),
+                    color: selected
+                        ? const Color(0xff171918)
+                        : const Color(0xff5d605e),
+                    size: 28,
+                  ),
                 ),
                 const SizedBox(height: 3),
                 Text(
                   item.$3,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                   style: TextStyle(
                     color: selected
-                        ? const Color(0xff2f8d25)
-                        : const Color(0xff555955),
+                        ? const Color(0xff171918)
+                        : const Color(0xff4f5250),
                     fontSize: 13,
+                    height: 1.15,
                     fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+                  ),
+                ),
+                const SizedBox(height: 5),
+                AnimatedContainer(
+                  duration: const Duration(milliseconds: 160),
+                  width: selected ? 6 : 0,
+                  height: 6,
+                  decoration: const BoxDecoration(
+                    color: Color(0xffe22d2d),
+                    shape: BoxShape.circle,
                   ),
                 ),
               ],

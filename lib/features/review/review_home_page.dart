@@ -17,11 +17,19 @@ abstract final class _ReviewColors {
   static const line = Color(0xffdfe4df);
 }
 
-class ReviewHomePage extends ConsumerWidget {
+class ReviewHomePage extends ConsumerStatefulWidget {
   const ReviewHomePage({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<ReviewHomePage> createState() => _ReviewHomePageState();
+}
+
+class _ReviewHomePageState extends ConsumerState<ReviewHomePage> {
+  String? _selectedFolder;
+
+  @override
+  Widget build(BuildContext context) {
+    final ref = this.ref;
     final cards = ref.watch(cardsProvider);
     final events = ref.watch(reviewEventsProvider);
 
@@ -35,12 +43,23 @@ class ReviewHomePage extends ConsumerWidget {
           ),
           error: (_, _) => _ReviewError(onRetry: () => _refreshReview(ref)),
           data: (values) {
-            final due = values.where((card) => card.isDue).toList();
-            final recent = events.valueOrNull ?? const <ReviewEventModel>[];
+            final folders = _folders(values);
+            final selectedFolder = _resolveSelectedFolder(folders);
+            final selectedCards = selectedFolder == null
+                ? const <CardModel>[]
+                : values
+                      .where((card) => card.folder == selectedFolder)
+                      .toList();
+            final due = selectedCards.where((card) => card.isDue).toList();
+            final recent = (events.valueOrNull ?? const <ReviewEventModel>[])
+                .where((event) => event.folder == selectedFolder)
+                .toList();
             final completedToday = recent
                 .where((event) => _sameDay(event.reviewedAt, DateTime.now()))
                 .length;
-            final reviewed = values.where((card) => card.reviews > 0).length;
+            final reviewed = selectedCards
+                .where((card) => card.reviews > 0)
+                .length;
 
             final streakDays = _streakDays(recent);
             final todayProgress = due.isEmpty
@@ -49,9 +68,12 @@ class ReviewHomePage extends ConsumerWidget {
                       .round()
                       .clamp(0, 100)
                       .toInt();
-            final completed = values.isEmpty
+            final completed = selectedCards.isEmpty
                 ? 0
-                : (reviewed / values.length * 5).round().clamp(0, 5).toInt();
+                : (reviewed / selectedCards.length * 5)
+                      .round()
+                      .clamp(0, 5)
+                      .toInt();
 
             return LayoutBuilder(
               builder: (context, constraints) {
@@ -71,14 +93,31 @@ class ReviewHomePage extends ConsumerWidget {
                         children: [
                           _WelcomeHeader(compact: compact),
                           SizedBox(height: compact ? 8 : 10),
+                          _CurrentDeckCard(
+                            folder: selectedFolder,
+                            cardCount: selectedCards.length,
+                            compact: compact,
+                            onTap: folders.isEmpty
+                                ? null
+                                : () => _showFolderPicker(folders, values),
+                          ),
+                          SizedBox(height: compact ? 8 : 10),
                           _DailyPlanCard(
                             dueCount: due.length,
-
                             completed: completed,
                             streakDays: streakDays,
                             todayProgress: todayProgress,
                             compact: compact,
-                            onStart: () => context.push('/review/study'),
+                            onStart: selectedFolder == null
+                                ? null
+                                : () => context.push(
+                                    Uri(
+                                      path: '/review/study',
+                                      queryParameters: {
+                                        'folder': selectedFolder,
+                                      },
+                                    ).toString(),
+                                  ),
                           ),
                           SizedBox(height: compact ? 10 : 12),
                           _ProgressSection(
@@ -89,7 +128,7 @@ class ReviewHomePage extends ConsumerWidget {
                           SizedBox(height: compact ? 10 : 12),
                           _MotivationBanner(
                             completedToday: completedToday,
-                            hasCards: values.isNotEmpty,
+                            hasCards: selectedCards.isNotEmpty,
                             compact: compact,
                           ),
                         ],
@@ -103,6 +142,102 @@ class ReviewHomePage extends ConsumerWidget {
         ),
       ),
     );
+  }
+
+  List<String> _folders(List<CardModel> cards) {
+    final folders = cards
+        .map((card) => card.folder.trim())
+        .where((folder) => folder.isNotEmpty)
+        .toSet()
+        .toList();
+    folders.sort();
+    return folders;
+  }
+
+  String? _resolveSelectedFolder(List<String> folders) {
+    if (folders.isEmpty) {
+      if (_selectedFolder != null) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted && _selectedFolder != null) {
+            setState(() => _selectedFolder = null);
+          }
+        });
+      }
+      return null;
+    }
+    if (_selectedFolder != null && folders.contains(_selectedFolder)) {
+      return _selectedFolder;
+    }
+    final next = folders.first;
+    if (_selectedFolder != next) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && _selectedFolder != next) {
+          setState(() => _selectedFolder = next);
+        }
+      });
+    }
+    return next;
+  }
+
+  Future<void> _showFolderPicker(
+    List<String> folders,
+    List<CardModel> cards,
+  ) async {
+    final selected = await showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: Colors.white,
+      showDragHandle: true,
+      builder: (sheetContext) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 0, 16, 18),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Padding(
+                padding: EdgeInsets.fromLTRB(4, 0, 4, 12),
+                child: Text(
+                  '切换牌组',
+                  style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700),
+                ),
+              ),
+              ...folders.map((folder) {
+                final count = cards
+                    .where((card) => card.folder == folder)
+                    .length;
+                final current = folder == _selectedFolder;
+                return ListTile(
+                  onTap: () => Navigator.of(sheetContext).pop(folder),
+                  contentPadding: const EdgeInsets.symmetric(horizontal: 8),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(14),
+                  ),
+                  tileColor: current ? _ReviewColors.softGreen : null,
+                  leading: Icon(
+                    current
+                        ? Icons.radio_button_checked_rounded
+                        : Icons.radio_button_unchecked_rounded,
+                    color: current
+                        ? _ReviewColors.green
+                        : const Color(0xff9aa69f),
+                  ),
+                  title: Text(
+                    folder,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(fontWeight: FontWeight.w600),
+                  ),
+                  subtitle: Text('$count 张卡片'),
+                );
+              }),
+            ],
+          ),
+        ),
+      ),
+    );
+    if (selected != null && mounted && selected != _selectedFolder) {
+      setState(() => _selectedFolder = selected);
+    }
   }
 
   Future<void> _refreshReview(WidgetRef ref) async {
@@ -218,6 +353,108 @@ class _WelcomeHeader extends StatelessWidget {
   }
 }
 
+class _CurrentDeckCard extends StatelessWidget {
+  const _CurrentDeckCard({
+    required this.folder,
+    required this.cardCount,
+    required this.compact,
+    required this.onTap,
+  });
+
+  final String? folder;
+  final int cardCount;
+  final bool compact;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) => Material(
+    color: Colors.white,
+    borderRadius: BorderRadius.circular(18),
+    child: InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(18),
+      child: Container(
+        height: compact ? 56 : 62,
+        padding: EdgeInsets.symmetric(horizontal: compact ? 14 : 16),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(18),
+          border: Border.all(color: const Color(0xffe8eee9)),
+          boxShadow: const [
+            BoxShadow(
+              color: Color(0x0d000000),
+              blurRadius: 12,
+              offset: Offset(0, 4),
+            ),
+          ],
+        ),
+        child: Row(
+          children: [
+            Container(
+              width: compact ? 34 : 38,
+              height: compact ? 34 : 38,
+              decoration: const BoxDecoration(
+                color: _ReviewColors.softGreen,
+                shape: BoxShape.circle,
+              ),
+              child: Icon(
+                Icons.folder_rounded,
+                color: _ReviewColors.green,
+                size: compact ? 18 : 20,
+              ),
+            ),
+            SizedBox(width: compact ? 9 : 11),
+            Expanded(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    '当前牌组',
+                    style: TextStyle(
+                      color: const Color(0xff68746f),
+                      fontSize: compact ? 11 : 12,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    folder ?? '暂无可用牌组',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      color: _ReviewColors.ink,
+                      fontSize: compact ? 15 : 16,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            if (folder != null) ...[
+              Text(
+                '$cardCount 张',
+                style: TextStyle(
+                  color: _ReviewColors.darkGreen,
+                  fontSize: compact ? 11 : 12,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              const SizedBox(width: 6),
+              Icon(
+                Icons.unfold_more_rounded,
+                color: onTap == null
+                    ? const Color(0xffb5beb8)
+                    : _ReviewColors.green,
+                size: compact ? 20 : 22,
+              ),
+            ],
+          ],
+        ),
+      ),
+    ),
+  );
+}
+
 class _DailyPlanCard extends StatelessWidget {
   const _DailyPlanCard({
     required this.dueCount,
@@ -233,7 +470,7 @@ class _DailyPlanCard extends StatelessWidget {
   final int streakDays;
   final int todayProgress;
   final bool compact;
-  final VoidCallback onStart;
+  final VoidCallback? onStart;
 
   @override
   Widget build(BuildContext context) => Container(
@@ -498,7 +735,7 @@ class _StartButton extends StatelessWidget {
   const _StartButton({required this.compact, required this.onPressed});
 
   final bool compact;
-  final VoidCallback onPressed;
+  final VoidCallback? onPressed;
 
   @override
   Widget build(BuildContext context) => SizedBox(

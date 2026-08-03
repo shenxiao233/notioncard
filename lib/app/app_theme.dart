@@ -3,7 +3,7 @@ import 'package:flutter/material.dart';
 abstract final class AppTheme {
   static const _primary = Color(0xff176b62);
   static const _secondary = Color(0xffb96935);
-  static const _background = Color(0xfff4f6f4);
+  static const background = Color(0xfffcfdfb);
   static const _outline = Color(0xffd8dfdb);
 
   static ThemeData light() {
@@ -21,7 +21,7 @@ abstract final class AppTheme {
           secondaryContainer: const Color(0xfffce8d3),
           onSecondaryContainer: const Color(0xff4d270b),
           surface: Colors.white,
-          surfaceContainerLowest: _background,
+          surfaceContainerLowest: background,
           outline: _outline,
           onSurface: const Color(0xff17211e),
           onSurfaceVariant: const Color(0xff68746f),
@@ -30,10 +30,10 @@ abstract final class AppTheme {
     return ThemeData(
       useMaterial3: true,
       colorScheme: scheme,
-      scaffoldBackgroundColor: _background,
+      scaffoldBackgroundColor: background,
       visualDensity: VisualDensity.standard,
       appBarTheme: AppBarTheme(
-        backgroundColor: _background,
+        backgroundColor: background,
         foregroundColor: scheme.onSurface,
         elevation: 0,
         scrolledUnderElevation: 0,

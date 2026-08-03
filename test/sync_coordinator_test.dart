@@ -102,6 +102,30 @@ void main() {
     expect(report.failed, 0);
   });
 
+  test('uses the saved cursor for subsequent incremental pulls', () async {
+    final adapter = _QueueAdapter([
+      _FakeResponse.json({
+        'syncTime': '2026-08-02T00:00:00.000Z',
+        'objects': [],
+      }),
+      _FakeResponse.json({
+        'syncTime': '2026-08-03T00:00:00.000Z',
+        'objects': [],
+      }),
+    ]);
+    final coordinator = _buildCoordinator(database, preferences, adapter);
+
+    expect(coordinator.needsInitialFullSync('account-1'), isTrue);
+    await coordinator.fullSync('account-1');
+    expect(coordinator.needsInitialFullSync('account-1'), isFalse);
+    expect(adapter.requests.single.queryParameters, isEmpty);
+
+    await coordinator.fullSync('account-1');
+    expect(
+      adapter.requests[1].queryParameters['lastSyncAt'],
+      '2026-08-02T00:00:00.000Z',
+    );
+  });
   test(
     'unwraps nested document data and preserves local body when remote body is empty',
     () async {

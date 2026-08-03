@@ -14,6 +14,7 @@ class SyncCoordinator {
   SyncCoordinator(this.database, {this.apiClient, this.preferences});
 
   static const _supportedObjectTypes = {'DECK', 'DOCUMENT', 'CARD', 'SETTINGS'};
+  static const _lastSyncKey = 'sync.last_sync';
   static const _fullSyncVersionKey = 'sync.full_sync_version';
   static const _fullSyncVersion = '1';
 
@@ -30,8 +31,8 @@ class SyncCoordinator {
   }
 
   bool needsInitialFullSync(String accountId) {
-    return preferences?.getString('$_fullSyncVersionKey.$accountId') !=
-        _fullSyncVersion;
+    final lastSync = preferences?.getString(_lastSyncKeyFor(accountId));
+    return lastSync == null || lastSync.trim().isEmpty;
   }
 
   Future<void> retryPending(String accountId) async {
@@ -188,16 +189,18 @@ class SyncCoordinator {
     if (client == null) return const FullSyncReport();
     final lastSync = force
         ? null
-        : preferences?.getString('sync.last_sync.$accountId');
+        : preferences?.getString(_lastSyncKeyFor(accountId));
+    final queryParameters = <String, dynamic>{};
+    if (lastSync != null && lastSync.trim().isNotEmpty) {
+      queryParameters['lastSyncAt'] = lastSync;
+    }
     final response = await client.get(
       '/api/v2/sync/full',
-      queryParameters: {
-        ...?lastSync == null ? null : {'lastSyncAt': lastSync},
-      },
+      queryParameters: queryParameters,
     );
     final body = _stringMap(response.data);
     final objects = body?['objects'];
-    if (objects is! List) {
+    if (body == null || (objects != null && objects is! List)) {
       throw const ApiException(
         statusCode: 502,
         message: 'Invalid full sync response',
@@ -206,7 +209,8 @@ class SyncCoordinator {
     var cards = 0;
     var documents = 0;
     var hasRemoteContent = false;
-    for (final raw in objects.whereType<Map>()) {
+    for (final raw
+        in (objects as List? ?? const <Object?>[]).whereType<Map>()) {
       final object = _stringMap(raw);
       if (object == null) continue;
       final payload = _payloadMap(object['data']);
@@ -253,10 +257,8 @@ class SyncCoordinator {
         documents: documents > 0,
       );
     }
-    await preferences?.setString(
-      'sync.last_sync.$accountId',
-      body?['syncTime']?.toString() ?? DateTime.now().toUtc().toIso8601String(),
-    );
+    final nextSync = _syncCursor(body);
+    await preferences?.setString(_lastSyncKeyFor(accountId), nextSync);
     await preferences?.setString(
       '$_fullSyncVersionKey.$accountId',
       _fullSyncVersion,
@@ -495,6 +497,16 @@ class SyncCoordinator {
     return parsed != null && parsed > 0 ? parsed : null;
   }
 
+  String _lastSyncKeyFor(String accountId) => '$_lastSyncKey.$accountId';
+
+  String _syncCursor(Map<String, dynamic>? body) {
+    for (final key in const ['syncTime', 'nextSyncAt', 'lastSyncAt']) {
+      final value = body?[key]?.toString().trim();
+      if (value != null && value.isNotEmpty) return value;
+    }
+    return DateTime.now().toUtc().toIso8601String();
+  }
+
   String _serverVersionKey(
     String accountId,
     String objectType,
@@ -533,8 +545,9 @@ class SyncCoordinator {
     if (value is List) return value.map((item) => item.toString()).toList();
     if (value is String && value.trim().isNotEmpty) {
       final decoded = _stringMap(value) ?? _stringListValue(value);
-      if (decoded is List)
+      if (decoded is List) {
         return decoded.map((item) => item.toString()).toList();
+      }
       return value
           .split(',')
           .map((item) => item.trim())

@@ -45,12 +45,15 @@ class _StudyPageState extends ConsumerState<StudyPage> {
             error: (error, _) =>
                 _StudyError(onRetry: () => ref.invalidate(cardsProvider)),
             data: (values) {
+              final selectedFolder =
+                  widget.selectedFolder ??
+                  (values.isEmpty ? null : values.first.folder);
               final due = values
                   .where(
                     (card) =>
                         card.isDue &&
-                        (widget.selectedFolder == null ||
-                            card.folder == widget.selectedFolder),
+                        (selectedFolder == null ||
+                            card.folder == selectedFolder),
                   )
                   .toList();
               _queueIds ??= due.map((card) => card.id).toList();
@@ -455,8 +458,8 @@ class _StudyCard extends StatelessWidget {
                   selectable: true,
                   textStyle: const TextStyle(
                     color: Color(0xff101311),
-                    fontSize: 20,
-                    height: 1.65,
+                    fontSize: 17,
+                    height: 1.5,
                     fontWeight: FontWeight.w400,
                   ),
                 ),
@@ -467,6 +470,11 @@ class _StudyCard extends StatelessWidget {
                     child: MarkdownContent(
                       data: card.noteContent,
                       noteEntries: true,
+                      textStyle: const TextStyle(
+                        color: Color(0xff101311),
+                        fontSize: 15,
+                        height: 1.4,
+                      ),
                     ),
                   ),
                 ] else ...[
@@ -494,7 +502,14 @@ class _StudyCard extends StatelessWidget {
                     _ContentPanel(
                       icon: Icons.menu_book_outlined,
                       title: '解析',
-                      child: MarkdownContent(data: card.explanation),
+                      child: MarkdownContent(
+                        data: card.explanation,
+                        textStyle: const TextStyle(
+                          color: Color(0xff101311),
+                          fontSize: 15,
+                          height: 1.4,
+                        ),
+                      ),
                     ),
                   ],
                   const SizedBox(height: 12),
@@ -652,8 +667,8 @@ class _OptionTile extends StatelessWidget {
                     selectable: false,
                     textStyle: const TextStyle(
                       color: Color(0xff101311),
-                      fontSize: 18,
-                      height: 1.35,
+                      fontSize: 16,
+                      height: 1.3,
                     ),
                   ),
                 ),
