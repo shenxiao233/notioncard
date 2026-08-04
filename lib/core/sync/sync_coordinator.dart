@@ -98,6 +98,7 @@ class SyncCoordinator {
                   'objectType': item.objectType,
                   'objectId': item.objectId,
                   'objectVersion': await _objectVersion(accountId, item),
+                  'operation': item.operation.name,
                   if (item.operation == SyncOperation.upsert)
                     'data': _decodePayload(item.payload),
                   'deviceId': await _deviceId(),
@@ -132,12 +133,16 @@ class SyncCoordinator {
           );
           if (result['conflict'] == true) {
             conflicts++;
-            await _applyRemotePayload(
-              accountId,
-              objectType,
-              result['data'],
-              fallbackId: objectId,
-            );
+            if (_isRemoteDeletion(result)) {
+              await _removeRemoteObject(accountId, objectType, objectId, result);
+            } else {
+              await _applyRemotePayload(
+                accountId,
+                objectType,
+                result['data'],
+                fallbackId: objectId,
+              );
+            }
             for (final item in groupedItems) {
               synced++;
               await database.markSyncSynced(item.id, accountId);
@@ -209,15 +214,16 @@ class SyncCoordinator {
     var cards = 0;
     var documents = 0;
     var hasRemoteContent = false;
-    for (final raw
-        in (objects as List? ?? const <Object?>[]).whereType<Map>()) {
+    final remoteObjects = [
+      ...(objects as List? ?? const <Object?>[]),
+      ..._deletionObjects(body),
+    ];
+    for (final raw in remoteObjects.whereType<Map>()) {
       final object = _stringMap(raw);
       if (object == null) continue;
-      final payload = _payloadMap(object['data']);
-      if (payload == null) continue;
-      final objectId = object['objectId']?.toString();
+      final objectId = _objectId(object);
       final objectUpdatedAt = object['updatedAt'];
-      final objectType = object['objectType']?.toString();
+      final objectType = _objectType(object);
       if (objectId == null || objectType == null) continue;
       await _saveServerVersion(
         accountId,
@@ -225,6 +231,12 @@ class SyncCoordinator {
         objectId,
         _version(object['objectVersion']),
       );
+      if (_isRemoteDeletion(object)) {
+        await _removeRemoteObject(accountId, objectType, objectId, object);
+        continue;
+      }
+      final payload = _payloadMap(object['data']);
+      if (payload == null) continue;
       switch (objectType) {
         case 'CARD':
           await database.saveCard(
@@ -411,6 +423,134 @@ class SyncCoordinator {
 
   String _objectKey(String objectType, String objectId) =>
       '$objectType\u0000$objectId';
+
+  String? _objectType(Map<String, dynamic> object) {
+    for (final key in const ['objectType', 'type', 'kind']) {
+      final value = object[key]?.toString().trim();
+      if (value != null && value.isNotEmpty) return value.toUpperCase();
+    }
+    return null;
+  }
+
+  String? _objectId(Map<String, dynamic> object) {
+    for (final key in const ['objectId', 'id']) {
+      final value = object[key]?.toString().trim();
+      if (value != null && value.isNotEmpty) return value;
+    }
+    final data = _stringMap(object['data']);
+    for (final key in const ['objectId', 'id']) {
+      final value = data?[key]?.toString().trim();
+      if (value != null && value.isNotEmpty) return value;
+    }
+    return null;
+  }
+
+  List<Map<String, dynamic>> _deletionObjects(Map<String, dynamic> body) {
+    final result = <Map<String, dynamic>>[];
+    for (final key in const [
+      'deletedObjects',
+      'deletions',
+      'tombstones',
+      'removedObjects',
+    ]) {
+      final values = body[key];
+      if (values is! List) continue;
+      for (final value in values) {
+        final item = _stringMap(value);
+        if (item != null) {
+          result.add({...item, 'deleted': true});
+        }
+      }
+    }
+    return result;
+  }
+
+  bool _isRemoteDeletion(Map<String, dynamic> object) {
+    // A full-sync tombstone may only contain the object identity and a null
+    // data field. It must not be treated as an empty upsert.
+    if (object.containsKey('data') && object['data'] == null) return true;
+    for (final key in const [
+      'deleted',
+      'isDeleted',
+      'is_deleted',
+      'removed',
+      'deletedAt',
+      'deleted_at',
+    ]) {
+      if (object[key] == true) return true;
+      if (key == 'deletedAt' || key == 'deleted_at') {
+        final value = object[key]?.toString().trim();
+        if (value != null && value.isNotEmpty && value != 'null') return true;
+      }
+    }
+    final metadata = _stringMap(object['metadata']);
+    if (metadata != null && metadata['deleted'] == true) return true;
+    for (final key in const ['operation', 'action', 'status']) {
+      final value = object[key]?.toString().toLowerCase().trim();
+      if (value == 'delete' || value == 'deleted' || value == 'remove') {
+        return true;
+      }
+    }
+    final data = _stringMap(object['data']);
+    if (data != null && !identical(data, object)) {
+      return _isRemoteDeletion(data);
+    }
+    return false;
+  }
+
+  Future<void> _removeRemoteObject(
+    String accountId,
+    String objectType,
+    String objectId,
+    Map<String, dynamic> object,
+  ) async {
+    final idsToClear = <String>{objectId};
+    switch (objectType) {
+      case 'CARD':
+        await database.deleteCard(objectId, accountId);
+      case 'DOCUMENT':
+        await database.deleteDocument(objectId, accountId);
+      case 'DECK':
+        final folders = _deckFolderCandidates(object, objectId);
+        if (folders.isEmpty) return;
+        final localCards = await database.loadCards(accountId);
+        final localDocuments = await database.loadDocuments(accountId);
+        final cards = localCards.where((card) => folders.contains(card.folder));
+        final documents = localDocuments.where(
+          (document) => folders.contains(document.folder),
+        );
+        for (final card in cards) {
+          idsToClear.add(card.id);
+          await database.deleteCard(card.id, accountId);
+        }
+        for (final document in documents) {
+          idsToClear.add(document.id);
+          await database.deleteDocument(document.id, accountId);
+        }
+    }
+    await database.markPendingSyncObjectsSynced(accountId, idsToClear);
+  }
+
+  Set<String> _deckFolderCandidates(
+    Map<String, dynamic> object,
+    String objectId,
+  ) {
+    final candidates = <String>{objectId};
+    final data = _payloadMap(object['data']) ?? _stringMap(object['data']);
+    for (final source in [object, ?data]) {
+      for (final key in const [
+        'folder',
+        'folderId',
+        'deckId',
+        'name',
+        'title',
+      ]) {
+        final value = source[key]?.toString().trim();
+        if (value != null && value.isNotEmpty) candidates.add(value);
+      }
+    }
+    return candidates;
+  }
 
   Map<String, dynamic>? _stringMap(Object? value) {
     if (value is Map) return Map<String, dynamic>.from(value);

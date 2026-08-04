@@ -1,9 +1,9 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-import '../lib/core/models/card_model.dart';
-import '../lib/features/review/review_queue.dart';
-import '../lib/features/review/review_settings.dart';
+import 'package:kncard_app/core/models/card_model.dart';
+import 'package:kncard_app/features/review/review_queue.dart';
+import 'package:kncard_app/features/review/review_settings.dart';
 
 void main() {
   test('review queue limits new and scheduled cards independently', () {
@@ -40,6 +40,31 @@ void main() {
     expect(second.state.reviewsPerDay, 42);
     expect(other.state.newCardsPerDay, 20);
     expect(other.state.reviewsPerDay, 100);
+  });
+
+  test('review settings tolerate legacy preference values', () async {
+    SharedPreferences.setMockInitialValues({
+      'review.new_cards_per_day.account-a': '7',
+      'review.reviews_per_day.account-a': 12000,
+    });
+    final preferences = await SharedPreferences.getInstance();
+    final settings = ReviewSettingsController(preferences, 'account-a');
+
+    expect(settings.state.newCardsPerDay, 7);
+    expect(settings.state.reviewsPerDay, 9999);
+  });
+
+  test('selected review folder is persisted per account', () async {
+    SharedPreferences.setMockInitialValues({});
+    final preferences = await SharedPreferences.getInstance();
+
+    await saveSelectedReviewFolder(preferences, 'account-a', '英语');
+
+    expect(loadSelectedReviewFolder(preferences, 'account-a'), '英语');
+    expect(loadSelectedReviewFolder(preferences, 'account-b'), isNull);
+
+    await saveSelectedReviewFolder(preferences, 'account-a', null);
+    expect(loadSelectedReviewFolder(preferences, 'account-a'), isNull);
   });
 }
 

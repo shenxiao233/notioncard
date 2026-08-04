@@ -74,4 +74,72 @@ class ContentRepository {
       );
     });
   }
+
+  Future<void> deleteCard({
+    required String accountId,
+    required String cardId,
+  }) async {
+    final now = DateTime.now();
+    await database.transaction(() async {
+      await database.deleteCard(cardId, accountId);
+      await database.deleteReviewEventsByCard(cardId, accountId);
+      await database.enqueueSync(
+        SyncQueueItemModel(
+          id: 'delete-card-$cardId-${now.microsecondsSinceEpoch}',
+          accountId: accountId,
+          objectType: 'CARD',
+          objectId: cardId,
+          objectVersion: 1,
+          operation: SyncOperation.delete,
+          payload: '',
+          status: SyncItemStatus.pending,
+          attempts: 0,
+          lastError: null,
+          createdAt: now,
+          updatedAt: now,
+        ),
+      );
+    });
+  }
+
+  Future<int> deleteDeck({
+    required String accountId,
+    required String folder,
+  }) async {
+    final isUncategorized = folder.trim().isEmpty || folder == '未分类';
+    final cards = (await database.loadCards(accountId))
+        .where(
+          (card) => isUncategorized
+              ? card.folder.trim().isEmpty
+              : card.folder == folder,
+        )
+        .toList();
+    final now = DateTime.now();
+    await database.transaction(() async {
+      await database.deleteCardsByFolder(
+        isUncategorized ? '' : folder,
+        accountId,
+      );
+      for (final card in cards) {
+        await database.deleteReviewEventsByCard(card.id, accountId);
+        await database.enqueueSync(
+          SyncQueueItemModel(
+            id: 'delete-card-${card.id}-${now.microsecondsSinceEpoch}',
+            accountId: accountId,
+            objectType: 'CARD',
+            objectId: card.id,
+            objectVersion: 1,
+            operation: SyncOperation.delete,
+            payload: '',
+            status: SyncItemStatus.pending,
+            attempts: 0,
+            lastError: null,
+            createdAt: now,
+            updatedAt: now,
+          ),
+        );
+      }
+    });
+    return cards.length;
+  }
 }

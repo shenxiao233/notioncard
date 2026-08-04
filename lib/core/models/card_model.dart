@@ -23,13 +23,13 @@ extension ReviewRatingLabel on ReviewRating {
   String get label {
     switch (this) {
       case ReviewRating.again:
-        return 'Again';
+        return '忘记了';
       case ReviewRating.hard:
-        return 'Hard';
+        return '模糊';
       case ReviewRating.good:
-        return 'Good';
+        return '熟悉';
       case ReviewRating.easy:
-        return 'Easy';
+        return '太简单';
     }
   }
 

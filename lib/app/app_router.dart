@@ -75,6 +75,13 @@ final routerProvider = Provider<GoRouter>((ref) {
             builder: (context, state) => const CardsPage(),
             routes: [
               GoRoute(
+                path: 'deck',
+                builder: (context, state) {
+                  final folder = state.extra?.toString() ?? '未分类';
+                  return DeckCardsPage(folder: folder);
+                },
+              ),
+              GoRoute(
                 path: ':cardId',
                 builder: (context, state) =>
                     CardDetailPage(cardId: state.pathParameters['cardId']!),

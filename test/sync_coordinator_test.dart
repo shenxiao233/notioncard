@@ -195,6 +195,110 @@ void main() {
     expect(adapter.requests, isEmpty);
     expect(remaining, isEmpty);
   });
+
+  test(
+    'removes a card when the incremental response contains a tombstone',
+    () async {
+      await database.saveCard(_buildCard('card-1', folder: 'deck-1'));
+      final adapter = _QueueAdapter([
+        _FakeResponse.json({
+          'syncTime': '2026-08-02T00:00:00.000Z',
+          'objects': [
+            {
+              'objectType': 'CARD',
+              'objectId': 'card-1',
+              'objectVersion': 4,
+              'deleted': true,
+            },
+          ],
+        }),
+      ]);
+      final coordinator = _buildCoordinator(database, preferences, adapter);
+
+      await coordinator.fullSync('account-1');
+
+      expect(await database.loadCards('account-1'), isEmpty);
+    },
+  );
+
+  test('removes a card when a tombstone has null data', () async {
+    await database.saveCard(_buildCard('card-1', folder: 'deck-1'));
+    final adapter = _QueueAdapter([
+      _FakeResponse.json({
+        'syncTime': '2026-08-02T00:00:00.000Z',
+        'objects': [
+          {'objectType': 'CARD', 'objectId': 'card-1', 'data': null},
+        ],
+      }),
+    ]);
+    final coordinator = _buildCoordinator(database, preferences, adapter);
+
+    await coordinator.fullSync('account-1');
+
+    expect(await database.loadCards('account-1'), isEmpty);
+  });
+
+  test('removes a stale local card when push conflicts with a tombstone', () async {
+    await database.saveCard(_buildCard('card-1', folder: 'deck-1'));
+    await database.enqueueSync(
+      _buildQueueItem('queue-delete-conflict', DateTime(2026, 8, 2)),
+    );
+    final adapter = _QueueAdapter([
+      _FakeResponse.json({
+        'responses': [
+          {
+            'objectType': 'CARD',
+            'objectId': 'card-1',
+            'serverVersion': 5,
+            'data': null,
+            'metadata': {'deleted': true},
+            'deleted': true,
+            'conflict': true,
+            'resolution': 'SERVER_WINS',
+          },
+        ],
+      }),
+    ]);
+    final coordinator = _buildCoordinator(database, preferences, adapter);
+
+    final report = await coordinator.sync('account-1');
+
+    expect(report.synced, 1);
+    expect(report.conflicts, 1);
+    expect(await database.loadCards('account-1'), isEmpty);
+    expect(await database.loadPendingSync('account-1'), isEmpty);
+  });
+
+  test('removes all local content in a deleted deck', () async {
+    await database.saveCard(_buildCard('card-1', folder: 'deck-1'));
+    await database.saveCard(_buildCard('card-2', folder: 'deck-2'));
+    await database.saveDocument(
+      DocumentModel(
+        id: 'doc-1',
+        accountId: 'account-1',
+        folder: 'deck-1',
+        title: 'Deck 1 note',
+        body: 'body',
+        updatedAt: DateTime(2026, 8, 1),
+      ),
+    );
+    final adapter = _QueueAdapter([
+      _FakeResponse.json({
+        'syncTime': '2026-08-02T00:00:00.000Z',
+        'deletions': [
+          {'objectType': 'DECK', 'objectId': 'deck-1', 'folder': 'deck-1'},
+        ],
+      }),
+    ]);
+    final coordinator = _buildCoordinator(database, preferences, adapter);
+
+    await coordinator.fullSync('account-1');
+
+    expect((await database.loadCards('account-1')).map((card) => card.id), [
+      'card-2',
+    ]);
+    expect(await database.loadDocuments('account-1'), isEmpty);
+  });
 }
 
 SyncCoordinator _buildCoordinator(
@@ -230,6 +334,36 @@ SyncQueueItemModel _buildQueueItem(
     lastError: null,
     createdAt: now,
     updatedAt: now,
+  );
+}
+
+CardModel _buildCard(String id, {required String folder}) {
+  final now = DateTime(2026, 8, 1);
+  return CardModel(
+    id: id,
+    accountId: 'account-1',
+    type: CardType.single,
+    folder: folder,
+    question: 'question',
+    options: const {'A': 'answer'},
+    answer: const ['A'],
+    noteContent: '',
+    explanation: '',
+    tags: const [],
+    dueAt: now,
+    createdAt: now,
+    updatedAt: now,
+    reviews: 0,
+    mastery: '',
+    suspended: false,
+    fsrs: FsrsSnapshot(
+      state: FsrsState.newCard,
+      dueAt: now,
+      stability: 0,
+      difficulty: 0,
+      reps: 0,
+      lapses: 0,
+    ),
   );
 }
 

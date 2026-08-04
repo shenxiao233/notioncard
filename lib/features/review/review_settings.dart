@@ -3,6 +3,31 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../app/app_providers.dart';
 
+const reviewSelectedFolderKeyPrefix = 'review.selected_folder';
+
+String reviewSelectedFolderKey(String accountId) =>
+    '$reviewSelectedFolderKeyPrefix.$accountId';
+
+String? loadSelectedReviewFolder(
+  SharedPreferences preferences,
+  String? accountId,
+) {
+  if (accountId == null) return null;
+  return preferences.getString(reviewSelectedFolderKey(accountId));
+}
+
+Future<bool> saveSelectedReviewFolder(
+  SharedPreferences preferences,
+  String? accountId,
+  String? folder,
+) {
+  if (accountId == null) return Future.value(true);
+  if (folder == null || folder.isEmpty) {
+    return preferences.remove(reviewSelectedFolderKey(accountId));
+  }
+  return preferences.setString(reviewSelectedFolderKey(accountId), folder);
+}
+
 class ReviewSettings {
   const ReviewSettings({this.newCardsPerDay = 20, this.reviewsPerDay = 100});
 
@@ -44,24 +69,31 @@ class ReviewSettingsController extends StateNotifier<ReviewSettings> {
     String accountId,
     int fallback,
   ) {
-    final value = preferences.getInt('$key.$accountId');
-    return value == null ? fallback : value.clamp(0, 9999);
+    final raw = preferences.get('$key.$accountId');
+    final value = raw is num ? raw.toInt() : int.tryParse('$raw');
+    return _normalize(value ?? fallback);
   }
 
   Future<void> setNewCardsPerDay(int value) async {
-    final normalized = value.clamp(0, 9999);
-    state = state.copyWith(newCardsPerDay: normalized);
+    final normalized = _normalize(value);
     if (_accountId != null) {
       await _preferences.setInt('$_newCardsKey.$_accountId', normalized);
     }
+    state = state.copyWith(newCardsPerDay: normalized);
   }
 
   Future<void> setReviewsPerDay(int value) async {
-    final normalized = value.clamp(0, 9999);
-    state = state.copyWith(reviewsPerDay: normalized);
+    final normalized = _normalize(value);
     if (_accountId != null) {
       await _preferences.setInt('$_reviewsKey.$_accountId', normalized);
     }
+    state = state.copyWith(reviewsPerDay: normalized);
+  }
+
+  static int _normalize(int value) {
+    if (value < 0) return 0;
+    if (value > 9999) return 9999;
+    return value;
   }
 }
 

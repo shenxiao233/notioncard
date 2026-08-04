@@ -28,7 +28,6 @@ class _StudyPageState extends ConsumerState<StudyPage> {
   final _selected = <String>{};
   bool _answered = false;
   bool _saving = false;
-  bool _speedMode = false;
   ReviewRating? _rating;
   int _completed = 0;
   final _ratingCounts = <ReviewRating, int>{};
@@ -38,16 +37,10 @@ class _StudyPageState extends ConsumerState<StudyPage> {
   @override
   Widget build(BuildContext context) {
     final cards = ref.watch(cardsProvider);
-    final events =
-        ref.watch(reviewEventsProvider).valueOrNull ??
-        const <ReviewEventModel>[];
     final settings = ref.watch(reviewSettingsProvider);
 
     return PopScope<void>(
-      canPop: false,
-      onPopInvokedWithResult: (didPop, result) {
-        if (!didPop) _confirmExit();
-      },
+      canPop: true,
       child: Scaffold(
         backgroundColor: _studyBackground,
         body: SafeArea(
@@ -79,17 +72,7 @@ class _StudyPageState extends ConsumerState<StudyPage> {
               }
 
               final card = queue[_index];
-              final deckCards = values.where((item) {
-                return widget.selectedFolder == null ||
-                    item.folder == widget.selectedFolder;
-              }).length;
               final todayTotal = queue.length + _completed;
-              final masteredToday = events.where((event) {
-                return _isToday(event.reviewedAt) &&
-                    (event.rating == ReviewRating.good ||
-                        event.rating == ReviewRating.easy);
-              }).length;
-              final streak = _learningStreak(events);
               final previews = {
                 for (final rating in ReviewRating.values)
                   rating: _nextDueLabel(card, rating),
@@ -98,24 +81,14 @@ class _StudyPageState extends ConsumerState<StudyPage> {
               return _StudyCard(
                 key: ValueKey(card.id),
                 card: card,
-                index: _index,
-                total: queue.length,
                 todayCompleted: _completed,
                 todayTotal: todayTotal,
-                deckSize: deckCards,
-                masteredToday: masteredToday,
-                streakDays: streak,
                 selected: _selected,
                 answered: _answered,
                 rating: _rating,
                 saving: _saving,
-                speedMode: _speedMode,
                 previews: previews,
                 favorite: _favorite,
-                onExit: _confirmExit,
-                onToggleSpeedMode: () =>
-                    setState(() => _speedMode = !_speedMode),
-                onMore: () => _showMoreActions(queue),
                 onToggleFavorite: () => setState(() => _favorite = !_favorite),
                 onOpenAnswerCard: () => _showAnswerCard(queue),
                 onSelect: (key) => _select(card, key),
@@ -288,90 +261,22 @@ class _StudyPageState extends ConsumerState<StudyPage> {
     );
   }
 
-  Future<void> _showMoreActions(List<CardModel> queue) async {
-    await showModalBottomSheet<void>(
-      context: context,
-      useSafeArea: true,
-      builder: (sheetContext) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            ListTile(
-              leading: const Icon(Icons.view_list_outlined),
-              title: const Text('查看答题卡'),
-              onTap: () {
-                Navigator.of(sheetContext).pop();
-                _showAnswerCard(queue);
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.exit_to_app_outlined),
-              title: const Text('退出复习'),
-              onTap: () {
-                Navigator.of(sheetContext).pop();
-                _confirmExit();
-              },
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
   String _nextDueLabel(CardModel card, ReviewRating rating) {
     final next = ref
         .read(reviewEngineProvider)
         .review(card, rating, DateTime.now())
         .dueAt;
     final difference = next.difference(DateTime.now());
-    if (difference.inMinutes < 60)
+    if (difference.inMinutes < 60) {
       return '${difference.inMinutes.clamp(1, 59)} 分钟';
-    if (difference.inHours < 24) return '${difference.inHours} 小时';
-    if (difference.inDays < 7) return '${difference.inDays} 天';
-    return '${next.month}/${next.day}';
-  }
-
-  Future<void> _confirmExit() async {
-    final shouldExit = await showDialog<bool>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('退出本轮复习？'),
-        content: Text(
-          _completed == 0 ? '当前卡片的答案尚未保存。' : '已完成的 $_completed 张卡片会保留。',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(dialogContext).pop(false),
-            child: const Text('继续复习'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(dialogContext).pop(true),
-            child: const Text('退出'),
-          ),
-        ],
-      ),
-    );
-    if (shouldExit == true && mounted) context.pop();
-  }
-
-  int _learningStreak(List<ReviewEventModel> events) {
-    final days = events
-        .map((event) => DateUtils.dateOnly(event.reviewedAt))
-        .toSet();
-    var cursor = DateUtils.dateOnly(DateTime.now());
-    var streak = 0;
-    while (days.contains(cursor)) {
-      streak++;
-      cursor = cursor.subtract(const Duration(days: 1));
     }
-    return streak;
-  }
-
-  bool _isToday(DateTime value) {
-    final today = DateTime.now();
-    return value.year == today.year &&
-        value.month == today.month &&
-        value.day == today.day;
+    if (difference.inHours < 24) {
+      return '${difference.inHours} 小时';
+    }
+    if (difference.inDays < 7) {
+      return '${difference.inDays} 天';
+    }
+    return '${next.month}/${next.day}';
   }
 
   String _plainText(String value) => value
@@ -380,27 +285,18 @@ class _StudyPageState extends ConsumerState<StudyPage> {
       .trim();
 }
 
-class _StudyCard extends StatelessWidget {
+class _StudyCard extends StatefulWidget {
   const _StudyCard({
     required super.key,
     required this.card,
-    required this.index,
-    required this.total,
     required this.todayCompleted,
     required this.todayTotal,
-    required this.deckSize,
-    required this.masteredToday,
-    required this.streakDays,
     required this.selected,
     required this.answered,
     required this.rating,
     required this.saving,
-    required this.speedMode,
     required this.previews,
     required this.favorite,
-    required this.onExit,
-    required this.onToggleSpeedMode,
-    required this.onMore,
     required this.onToggleFavorite,
     required this.onOpenAnswerCard,
     required this.onSelect,
@@ -409,23 +305,14 @@ class _StudyCard extends StatelessWidget {
   });
 
   final CardModel card;
-  final int index;
-  final int total;
   final int todayCompleted;
   final int todayTotal;
-  final int deckSize;
-  final int masteredToday;
-  final int streakDays;
   final Set<String> selected;
   final bool answered;
   final ReviewRating? rating;
   final bool saving;
-  final bool speedMode;
   final Map<ReviewRating, String> previews;
   final bool favorite;
-  final VoidCallback onExit;
-  final VoidCallback onToggleSpeedMode;
-  final VoidCallback onMore;
   final VoidCallback onToggleFavorite;
   final VoidCallback onOpenAnswerCard;
   final ValueChanged<String> onSelect;
@@ -433,144 +320,106 @@ class _StudyCard extends StatelessWidget {
   final ValueChanged<ReviewRating> onRate;
 
   @override
+  State<_StudyCard> createState() => _StudyCardState();
+}
+
+class _StudyCardState extends State<_StudyCard> {
+  bool _expanded = false;
+
+  @override
   Widget build(BuildContext context) {
+    final card = widget.card;
+    final selected = widget.selected;
+    final answered = widget.answered;
+    final favorite = widget.favorite;
+    final saving = widget.saving;
+    final rating = widget.rating;
+    final previews = widget.previews;
+    final todayCompleted = widget.todayCompleted;
+    final todayTotal = widget.todayTotal;
     final progress = todayTotal == 0
         ? 0.0
         : (todayCompleted / todayTotal).clamp(0.0, 1.0);
+    final canExpand =
+        card.type == CardType.note && card.noteContent.trim().isNotEmpty;
     return Column(
       children: [
-        Padding(
-          padding: const EdgeInsets.fromLTRB(14, 8, 10, 0),
+        Container(
+          margin: const EdgeInsets.fromLTRB(14, 2, 14, 6),
+          padding: const EdgeInsets.fromLTRB(18, 8, 18, 8),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(18),
+            boxShadow: const [
+              BoxShadow(
+                color: Color(0x0b000000),
+                blurRadius: 14,
+                offset: Offset(0, 5),
+              ),
+            ],
+          ),
           child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Row(
-                children: [
-                  IconButton(
-                    onPressed: onExit,
-                    tooltip: '退出复习',
-                    icon: const Icon(
-                      Icons.arrow_back_ios_new_rounded,
-                      size: 23,
-                    ),
-                  ),
-                  const SizedBox(width: 2),
-                  const Expanded(
-                    child: Text(
-                      '复习中',
-                      style: TextStyle(
-                        fontSize: 26,
-                        fontWeight: FontWeight.w700,
-                        color: _studyInk,
-                      ),
-                    ),
-                  ),
-                  OutlinedButton.icon(
-                    onPressed: onToggleSpeedMode,
-                    icon: Icon(
-                      Icons.bolt_rounded,
-                      size: 17,
-                      color: speedMode ? _studyGreen : _studyMuted,
-                    ),
-                    label: const Text('速记模式'),
-                    style: OutlinedButton.styleFrom(
-                      foregroundColor: speedMode ? _studyGreen : _studyInk,
-                      side: BorderSide(
-                        color: speedMode
-                            ? _studyGreen
-                            : const Color(0xffe1e7e3),
-                      ),
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 10,
-                        vertical: 8,
-                      ),
-                      minimumSize: Size.zero,
-                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                    ),
-                  ),
-                  IconButton(
-                    onPressed: onMore,
-                    tooltip: '更多操作',
-                    icon: const Icon(Icons.more_horiz_rounded, size: 25),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 8),
-              Row(
-                crossAxisAlignment: CrossAxisAlignment.end,
+                crossAxisAlignment: CrossAxisAlignment.center,
                 children: [
                   const Text(
-                    '今日进度 ',
-                    style: TextStyle(fontSize: 19, color: _studyInk),
-                  ),
-                  Text(
-                    '$todayCompleted / $todayTotal',
-                    style: const TextStyle(
-                      fontSize: 27,
-                      fontWeight: FontWeight.w700,
-                      color: _studyGreen,
-                    ),
+                    '今日进度',
+                    style: TextStyle(fontSize: 14, color: _studyInk),
                   ),
                   const Spacer(),
-                  Flexible(
-                    child: Text(
-                      card.folder.isEmpty ? '全部牌组' : card.folder,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      textAlign: TextAlign.right,
-                      style: const TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.w600,
-                        color: _studyInk,
-                      ),
+                  Text.rich(
+                    TextSpan(
+                      children: [
+                        TextSpan(
+                          text: '$todayCompleted',
+                          style: const TextStyle(
+                            fontSize: 20,
+                            height: 1.05,
+                            fontWeight: FontWeight.w700,
+                            color: _studyGreen,
+                          ),
+                        ),
+                        const TextSpan(
+                          text: ' / ',
+                          style: TextStyle(
+                            fontSize: 17,
+                            color: _studyMuted,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                        TextSpan(
+                          text: '$todayTotal',
+                          style: const TextStyle(
+                            fontSize: 20,
+                            height: 1.05,
+                            fontWeight: FontWeight.w700,
+                            color: _studyInk,
+                          ),
+                        ),
+                      ],
                     ),
                   ),
                 ],
-              ),
-              const SizedBox(height: 7),
-              ClipRRect(
-                borderRadius: BorderRadius.circular(8),
-                child: LinearProgressIndicator(
-                  minHeight: 8,
-                  value: progress,
-                  backgroundColor: const Color(0xffe4e9e6),
-                  valueColor: const AlwaysStoppedAnimation(_studyGreen),
-                ),
               ),
               const SizedBox(height: 5),
-              Align(
-                alignment: Alignment.centerRight,
-                child: Text(
-                  '总词量 $deckSize',
-                  style: const TextStyle(fontSize: 13, color: _studyMuted),
+              ClipRRect(
+                borderRadius: BorderRadius.circular(5),
+                child: LinearProgressIndicator(
+                  minHeight: 5,
+                  value: progress,
+                  backgroundColor: const Color(0xffe7ece9),
+                  valueColor: const AlwaysStoppedAnimation(_studyGreen),
                 ),
-              ),
-              const SizedBox(height: 12),
-              Row(
-                children: [
-                  Expanded(
-                    child: _StudyStat(
-                      icon: Icons.local_fire_department_outlined,
-                      text: '已连续学习 $streakDays 天',
-                      color: const Color(0xffe98658),
-                    ),
-                  ),
-                  Expanded(
-                    child: _StudyStat(
-                      icon: Icons.bar_chart_rounded,
-                      text: '今日已掌握 $masteredToday 个',
-                      color: _studyGreen,
-                      alignEnd: true,
-                    ),
-                  ),
-                ],
               ),
             ],
           ),
         ),
         Expanded(
           child: Container(
-            margin: const EdgeInsets.fromLTRB(14, 14, 14, 12),
-            padding: const EdgeInsets.fromLTRB(20, 20, 20, 12),
+            margin: const EdgeInsets.fromLTRB(14, 8, 14, 8),
+            padding: const EdgeInsets.fromLTRB(16, 14, 16, 8),
             decoration: BoxDecoration(
               color: Colors.white,
               borderRadius: BorderRadius.circular(22),
@@ -582,18 +431,51 @@ class _StudyCard extends StatelessWidget {
                 ),
               ],
             ),
-            child: SingleChildScrollView(
-              physics: const BouncingScrollPhysics(),
-              child: _CardBody(
-                card: card,
-                selected: selected,
-                answered: answered,
-                speedMode: speedMode,
-                favorite: favorite,
-                onToggleFavorite: onToggleFavorite,
-                onOpenAnswerCard: onOpenAnswerCard,
-                onSelect: onSelect,
-              ),
+            child: Stack(
+              clipBehavior: Clip.hardEdge,
+              children: [
+                Positioned.fill(
+                  child: SingleChildScrollView(
+                    physics: _expanded
+                        ? const BouncingScrollPhysics()
+                        : const NeverScrollableScrollPhysics(),
+                    child: _CardBody(
+                      card: card,
+                      selected: selected,
+                      answered: answered,
+                      favorite: favorite,
+                      onToggleFavorite: widget.onToggleFavorite,
+                      onOpenAnswerCard: widget.onOpenAnswerCard,
+                      onSelect: widget.onSelect,
+                    ),
+                  ),
+                ),
+                if (canExpand && !_expanded)
+                  Positioned(
+                    left: 0,
+                    right: 0,
+                    bottom: 0,
+                    height: 76,
+                    child: DecoratedBox(
+                      decoration: const BoxDecoration(
+                        gradient: LinearGradient(
+                          begin: Alignment.topCenter,
+                          end: Alignment.bottomCenter,
+                          // Transparent white avoids the gray interpolation
+                          // produced by transparent black.
+                          colors: [Color(0x00FFFFFF), Colors.white],
+                        ),
+                      ),
+                      child: Align(
+                        alignment: Alignment.bottomCenter,
+                        child: _ExpandButton(
+                          expanded: _expanded,
+                          onTap: () => setState(() => _expanded = !_expanded),
+                        ),
+                      ),
+                    ),
+                  ),
+              ],
             ),
           ),
         ),
@@ -601,60 +483,27 @@ class _StudyCard extends StatelessWidget {
           _SubmitBar(
             enabled: selected.isNotEmpty,
             favorite: favorite,
-            onToggleFavorite: onToggleFavorite,
-            onOpenAnswerCard: onOpenAnswerCard,
-            onSubmit: onSubmit,
+            onToggleFavorite: widget.onToggleFavorite,
+            onOpenAnswerCard: widget.onOpenAnswerCard,
+            onSubmit: widget.onSubmit,
           )
         else
           _RatingBar(
             rating: rating,
             saving: saving,
             previews: previews,
-            onRate: onRate,
+            onRate: widget.onRate,
           ),
       ],
     );
   }
 }
 
-class _StudyStat extends StatelessWidget {
-  const _StudyStat({
-    required this.icon,
-    required this.text,
-    required this.color,
-    this.alignEnd = false,
-  });
-
-  final IconData icon;
-  final String text;
-  final Color color;
-  final bool alignEnd;
-
-  @override
-  Widget build(BuildContext context) => Row(
-    mainAxisAlignment: alignEnd
-        ? MainAxisAlignment.end
-        : MainAxisAlignment.start,
-    children: [
-      Icon(icon, color: color, size: 21),
-      const SizedBox(width: 5),
-      Flexible(
-        child: Text(
-          text,
-          overflow: TextOverflow.ellipsis,
-          style: const TextStyle(color: _studyInk, fontSize: 14),
-        ),
-      ),
-    ],
-  );
-}
-
-class _CardBody extends StatefulWidget {
+class _CardBody extends StatelessWidget {
   const _CardBody({
     required this.card,
     required this.selected,
     required this.answered,
-    required this.speedMode,
     required this.favorite,
     required this.onToggleFavorite,
     required this.onOpenAnswerCard,
@@ -664,26 +513,17 @@ class _CardBody extends StatefulWidget {
   final CardModel card;
   final Set<String> selected;
   final bool answered;
-  final bool speedMode;
   final bool favorite;
   final VoidCallback onToggleFavorite;
   final VoidCallback onOpenAnswerCard;
   final ValueChanged<String> onSelect;
 
   @override
-  State<_CardBody> createState() => _CardBodyState();
-}
-
-class _CardBodyState extends State<_CardBody> {
-  bool _expanded = false;
-
-  @override
   Widget build(BuildContext context) {
-    final card = widget.card;
     final isCorrect =
-        widget.selected.length == card.answer.length &&
-        widget.selected.containsAll(card.answer);
-    final titleSize = widget.speedMode ? 23.0 : 27.0;
+        selected.length == card.answer.length &&
+        selected.containsAll(card.answer);
+    const titleSize = 14.0;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -701,7 +541,7 @@ class _CardBodyState extends State<_CardBody> {
                 ),
               ),
             ),
-            if (card.tags.isNotEmpty)
+            if (card.type == CardType.note && card.tags.isNotEmpty)
               Wrap(
                 alignment: WrapAlignment.end,
                 spacing: 5,
@@ -713,32 +553,13 @@ class _CardBodyState extends State<_CardBody> {
               ),
           ],
         ),
-        Align(
-          alignment: Alignment.centerLeft,
-          child: IconButton(
-            onPressed: () => Feedback.forTap(context),
-            tooltip: '播放发音',
-            padding: EdgeInsets.zero,
-            constraints: const BoxConstraints.tightFor(width: 36, height: 36),
-            icon: const Icon(
-              Icons.volume_up_outlined,
-              color: _studyMuted,
-              size: 25,
-            ),
-          ),
-        ),
         const Divider(height: 20, color: Color(0xffedf0ee)),
         if (card.type == CardType.note) ...[
-          _ReviewContent(data: card.noteContent, expanded: _expanded),
-          if (card.noteContent.trim().isNotEmpty)
-            _ExpandButton(
-              expanded: _expanded,
-              onTap: () => setState(() => _expanded = !_expanded),
-            ),
+          _ReviewContent(data: card.noteContent),
         ] else ...[
           const Text(
             '请选择答案',
-            style: TextStyle(fontSize: 15, color: _studyMuted),
+            style: TextStyle(fontSize: 13, color: _studyMuted),
           ),
           const SizedBox(height: 10),
           ...card.options.entries.map(
@@ -746,14 +567,14 @@ class _CardBodyState extends State<_CardBody> {
               padding: const EdgeInsets.only(bottom: 9),
               child: _OptionTile(
                 entry: entry,
-                selected: widget.selected.contains(entry.key),
-                answered: widget.answered,
+                selected: selected.contains(entry.key),
+                answered: answered,
                 isCorrect: card.answer.contains(entry.key),
-                onTap: () => widget.onSelect(entry.key),
+                onTap: () => onSelect(entry.key),
               ),
             ),
           ),
-          if (widget.answered) ...[
+          if (answered) ...[
             const SizedBox(height: 2),
             Text(
               isCorrect ? '回答正确' : '再看一下正确答案',
@@ -763,9 +584,9 @@ class _CardBodyState extends State<_CardBody> {
               ),
             ),
           ],
-          if (widget.answered && card.explanation.isNotEmpty) ...[
+          if (answered && card.explanation.isNotEmpty) ...[
             const SizedBox(height: 18),
-            _ReviewContent(data: card.explanation, expanded: true),
+            _ReviewContent(data: card.explanation),
           ],
         ],
         const SizedBox(height: 12),
@@ -779,24 +600,16 @@ class _CardBodyState extends State<_CardBody> {
 }
 
 class _ReviewContent extends StatelessWidget {
-  const _ReviewContent({required this.data, required this.expanded});
+  const _ReviewContent({required this.data});
 
   final String data;
-  final bool expanded;
 
   @override
   Widget build(BuildContext context) {
-    final content = MarkdownContent(
+    return MarkdownContent(
       data: data,
       noteEntries: true,
-      textStyle: const TextStyle(color: _studyInk, fontSize: 17, height: 1.55),
-    );
-    return AnimatedContainer(
-      duration: const Duration(milliseconds: 180),
-      constraints: expanded ? null : const BoxConstraints(maxHeight: 220),
-      clipBehavior: Clip.hardEdge,
-      decoration: const BoxDecoration(),
-      child: content,
+      textStyle: const TextStyle(color: _studyInk, fontSize: 15, height: 1.5),
     );
   }
 }
@@ -909,7 +722,7 @@ class _OptionTile extends StatelessWidget {
               child: MarkdownContent(
                 data: entry.value,
                 textStyle: const TextStyle(
-                  fontSize: 15,
+                  fontSize: 14,
                   height: 1.35,
                   color: _studyInk,
                 ),
@@ -941,7 +754,7 @@ class _SubmitBar extends StatelessWidget {
   Widget build(BuildContext context) => SafeArea(
     top: false,
     child: Padding(
-      padding: const EdgeInsets.fromLTRB(14, 0, 14, 10),
+      padding: const EdgeInsets.fromLTRB(14, 0, 14, 8),
       child: Row(
         children: [
           IconButton(
@@ -991,7 +804,7 @@ class _RatingBar extends StatelessWidget {
   Widget build(BuildContext context) => SafeArea(
     top: false,
     child: Padding(
-      padding: const EdgeInsets.fromLTRB(14, 0, 14, 10),
+      padding: const EdgeInsets.fromLTRB(14, 0, 14, 8),
       child: Column(
         children: [
           Row(
@@ -1017,7 +830,7 @@ class _RatingBar extends StatelessWidget {
               ),
             ],
           ),
-          const SizedBox(height: 9),
+          const SizedBox(height: 7),
           _RatingButton(
             value: ReviewRating.good,
             nextDue: previews[ReviewRating.good] ?? '',
@@ -1026,7 +839,7 @@ class _RatingBar extends StatelessWidget {
             onTap: () => onRate(ReviewRating.good),
             fullWidth: true,
           ),
-          const SizedBox(height: 9),
+          const SizedBox(height: 7),
           _RatingButton(
             value: ReviewRating.easy,
             nextDue: previews[ReviewRating.easy] ?? '',
@@ -1068,13 +881,13 @@ class _RatingButton extends StatelessWidget {
     };
     return Material(
       color: selected ? colors.$2 : colors.$1,
-      borderRadius: BorderRadius.circular(18),
+      borderRadius: BorderRadius.circular(14),
       child: InkWell(
         onTap: saving ? null : onTap,
-        borderRadius: BorderRadius.circular(18),
+        borderRadius: BorderRadius.circular(14),
         child: SizedBox(
           width: fullWidth ? double.infinity : null,
-          height: fullWidth ? 64 : 82,
+          height: fullWidth ? 58 : 68,
           child: saving && selected
               ? const Center(
                   child: SizedBox.square(
@@ -1092,16 +905,16 @@ class _RatingButton extends StatelessWidget {
                       value.label,
                       style: TextStyle(
                         color: selected ? Colors.white : colors.$2,
-                        fontSize: 20,
+                        fontSize: 18,
                         fontWeight: FontWeight.w700,
                       ),
                     ),
-                    const SizedBox(height: 4),
+                    const SizedBox(height: 2),
                     Text(
                       nextDue,
                       style: TextStyle(
                         color: selected ? Colors.white : colors.$2,
-                        fontSize: 15,
+                        fontSize: 13,
                         fontWeight: FontWeight.w600,
                       ),
                     ),

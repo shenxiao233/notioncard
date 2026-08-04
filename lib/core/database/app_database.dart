@@ -131,6 +131,20 @@ class AppDatabase extends _$AppDatabase {
     cards,
   )..where((row) => row.id.equals(id) & row.accountId.equals(accountId))).go();
 
+  Future<void> deleteCardsByFolder(String folder, String accountId) =>
+      (delete(cards)..where(
+            (row) =>
+                row.folder.equals(folder) & row.accountId.equals(accountId),
+          ))
+          .go();
+
+  Future<void> deleteReviewEventsByCard(String cardId, String accountId) =>
+      (delete(reviewEvents)..where(
+            (row) =>
+                row.cardId.equals(cardId) & row.accountId.equals(accountId),
+          ))
+          .go();
+
   Future<List<DocumentModel>> loadDocuments(String accountId) async {
     final rows =
         await (select(documents)
@@ -194,6 +208,13 @@ class AppDatabase extends _$AppDatabase {
   Future<void> deleteDocument(String id, String accountId) => (delete(
     documents,
   )..where((row) => row.id.equals(id) & row.accountId.equals(accountId))).go();
+
+  Future<void> deleteDocumentsByFolder(String folder, String accountId) =>
+      (delete(documents)..where(
+            (row) =>
+                row.folder.equals(folder) & row.accountId.equals(accountId),
+          ))
+          .go();
 
   Future<List<ReviewEventModel>> loadReviewEvents(String accountId) async {
     final rows =
@@ -301,6 +322,18 @@ class AppDatabase extends _$AppDatabase {
             (value) => value.id.equals(id) & value.accountId.equals(accountId),
           ))
           .write(const SyncQueueCompanion(status: Value('synced')));
+
+  Future<void> markPendingSyncObjectsSynced(
+    String accountId,
+    Iterable<String> objectIds,
+  ) async {
+    final ids = objectIds.where((id) => id.isNotEmpty).toSet();
+    if (ids.isEmpty) return;
+    await (update(syncQueue)..where(
+          (row) => row.accountId.equals(accountId) & row.objectId.isIn(ids),
+        ))
+        .write(const SyncQueueCompanion(status: Value('synced')));
+  }
 
   SyncQueueItemModel _syncFromRow(SyncQueueData row) => SyncQueueItemModel(
     id: row.id,

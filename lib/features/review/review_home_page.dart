@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
@@ -5,6 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../app/app_providers.dart';
+import '../../core/models/account_model.dart';
 import '../../core/models/card_model.dart';
 import 'review_queue.dart';
 import 'review_settings.dart';
@@ -28,6 +30,18 @@ class ReviewHomePage extends ConsumerStatefulWidget {
 
 class _ReviewHomePageState extends ConsumerState<ReviewHomePage> {
   String? _selectedFolder;
+  String? _selectedFolderAccountId;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadSelectedFolder(ref.read(currentAccountProvider));
+    ref.listenManual(currentAccountProvider, (previous, next) {
+      if (next?.id == _selectedFolderAccountId) return;
+      _loadSelectedFolder(next);
+      if (mounted) setState(() {});
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -166,7 +180,7 @@ class _ReviewHomePageState extends ConsumerState<ReviewHomePage> {
       if (_selectedFolder != null) {
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (mounted && _selectedFolder != null) {
-            setState(() => _selectedFolder = null);
+            _setSelectedFolder(null);
           }
         });
       }
@@ -179,11 +193,31 @@ class _ReviewHomePageState extends ConsumerState<ReviewHomePage> {
     if (_selectedFolder != next) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted && _selectedFolder != next) {
-          setState(() => _selectedFolder = next);
+          _setSelectedFolder(next);
         }
       });
     }
     return next;
+  }
+
+  void _loadSelectedFolder(AccountModel? account) {
+    _selectedFolderAccountId = account?.id;
+    _selectedFolder = loadSelectedReviewFolder(
+      ref.read(sharedPreferencesProvider),
+      account?.id,
+    );
+  }
+
+  void _setSelectedFolder(String? folder) {
+    if (_selectedFolder == folder) return;
+    setState(() => _selectedFolder = folder);
+    unawaited(
+      saveSelectedReviewFolder(
+        ref.read(sharedPreferencesProvider),
+        _selectedFolderAccountId,
+        folder,
+      ),
+    );
   }
 
   Future<void> _showFolderPicker(
@@ -243,7 +277,7 @@ class _ReviewHomePageState extends ConsumerState<ReviewHomePage> {
       ),
     );
     if (selected != null && mounted && selected != _selectedFolder) {
-      setState(() => _selectedFolder = selected);
+      _setSelectedFolder(selected);
     }
   }
 
