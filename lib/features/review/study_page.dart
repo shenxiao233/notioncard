@@ -37,6 +37,7 @@ class _StudyPageState extends ConsumerState<StudyPage> {
   final _ratingCounts = <ReviewRating, int>{};
   List<String>? _queueIds;
   String? _sessionKey;
+  Future<void> _sessionWrite = Future<void>.value();
   bool _sessionInitialized = false;
   bool _favorite = false;
 
@@ -44,6 +45,7 @@ class _StudyPageState extends ConsumerState<StudyPage> {
   Widget build(BuildContext context) {
     final cards = ref.watch(cardsProvider);
     final settings = ref.watch(reviewSettingsProvider);
+    final reviewEvents = ref.watch(reviewEventsProvider);
 
     return PopScope<void>(
       canPop: true,
@@ -57,6 +59,13 @@ class _StudyPageState extends ConsumerState<StudyPage> {
             error: (error, _) =>
                 _StudyError(onRetry: () => ref.invalidate(cardsProvider)),
             data: (values) {
+              if (!_sessionInitialized &&
+                  reviewEvents.valueOrNull == null &&
+                  !reviewEvents.hasError) {
+                return const Center(
+                  child: CircularProgressIndicator(color: _studyGreen),
+                );
+              }
               final limitedQueue = buildReviewQueue(
                 cards: values,
                 settings: settings,
@@ -66,7 +75,7 @@ class _StudyPageState extends ConsumerState<StudyPage> {
               _initializeSession(
                 limitedQueue: limitedQueue,
                 cardsById: cardsById,
-                events: ref.read(reviewEventsProvider).valueOrNull,
+                events: reviewEvents.valueOrNull,
               );
               final queueIds = _reconcileQueue(cardsById);
               final queue = queueIds
@@ -128,9 +137,10 @@ class _StudyPageState extends ConsumerState<StudyPage> {
     final savedQueueIds =
         snapshot?.queueIds ?? limitedQueue.map((card) => card.id).toList();
     _queueIds = _activeQueueIds(savedQueueIds, cardsById);
-    final completedIds =
-        snapshot?.completedIds ??
-        _completedIdsFromEvents(events, _queueIds!, cardsById);
+    final completedIds = {
+      ...?snapshot?.completedIds,
+      ..._completedIdsFromEvents(events, _queueIds!, cardsById),
+    };
     _completedCardIds.addAll(completedIds.where(_queueIds!.toSet().contains));
     _index = _firstPendingIndex(_queueIds!, _completedCardIds);
     _sessionInitialized = true;
@@ -192,20 +202,23 @@ class _StudyPageState extends ConsumerState<StudyPage> {
     return index == -1 ? queueIds.length : index;
   }
 
-  Future<void> _persistSession() async {
+  Future<void> _persistSession() {
     final key = _sessionKey;
     final queueIds = _queueIds;
-    if (key == null || queueIds == null) return;
-    await ref
-        .read(sharedPreferencesProvider)
-        .setString(
-          key,
-          jsonEncode({
-            'date': _todayKey(DateTime.now()),
-            'queueIds': queueIds,
-            'completedIds': _completedCardIds.toList(),
-          }),
-        );
+    if (key == null || queueIds == null) return Future<void>.value();
+    final payload = jsonEncode({
+      'date': _todayKey(DateTime.now()),
+      'queueIds': queueIds,
+      'completedIds': _completedCardIds.toList(),
+    });
+    final write = _sessionWrite.then(
+      (_) => ref.read(sharedPreferencesProvider).setString(key, payload),
+    );
+    _sessionWrite = write.then<void>(
+      (_) {},
+      onError: (Object error, StackTrace stackTrace) {},
+    );
+    return write;
   }
 
   static String _studySessionKey(String accountId, String? folder) {
