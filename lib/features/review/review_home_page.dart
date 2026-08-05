@@ -10,6 +10,7 @@ import '../../core/models/account_model.dart';
 import '../../core/models/card_model.dart';
 import 'review_queue.dart';
 import 'review_settings.dart';
+import 'review_session.dart';
 
 abstract final class _ReviewColors {
   static const background = Color(0xfffcfdfb);
@@ -75,17 +76,38 @@ class _ReviewHomePageState extends ConsumerState<ReviewHomePage> {
             final recent = (events.valueOrNull ?? const <ReviewEventModel>[])
                 .where((event) => event.folder == selectedFolder)
                 .toList();
-            final completedToday = recent
-                .where((event) => _sameDay(event.reviewedAt, DateTime.now()))
-                .length;
+            final account = ref.watch(currentAccountProvider);
+            final session = account == null || selectedFolder == null
+                ? null
+                : loadReviewSession(
+                    ref.read(sharedPreferencesProvider),
+                    account.id,
+                    selectedFolder,
+                  );
+            final cardsById = {for (final card in selectedCards) card.id: card};
+            final sessionQueueIds = session == null
+                ? const <String>[]
+                : session.queueIds
+                      .where(cardsById.containsKey)
+                      .where((id) => cardsById[id]!.folder == selectedFolder)
+                      .toList();
+            final todayTotal = session == null
+                ? due.length
+                : sessionQueueIds.length;
+            final completedToday = session == null
+                ? 0
+                : session.completedIds
+                      .where(sessionQueueIds.toSet().contains)
+                      .length;
+            final dueCount = math.max(0, todayTotal - completedToday).toInt();
             final reviewed = selectedCards
                 .where((card) => card.reviews > 0)
                 .length;
 
             final streakDays = _streakDays(recent);
-            final todayProgress = due.isEmpty
+            final todayProgress = todayTotal == 0
                 ? 0
-                : (completedToday / due.length * 100)
+                : (completedToday / todayTotal * 100)
                       .round()
                       .clamp(0, 100)
                       .toInt();
@@ -118,13 +140,16 @@ class _ReviewHomePageState extends ConsumerState<ReviewHomePage> {
                             folder: selectedFolder,
                             cardCount: selectedCards.length,
                             compact: compact,
+                            onRelearn: selectedFolder == null
+                                ? null
+                                : () => _relearnDeck(selectedFolder),
                             onTap: folders.isEmpty
                                 ? null
                                 : () => _showFolderPicker(folders, values),
                           ),
                           SizedBox(height: compact ? 8 : 10),
                           _DailyPlanCard(
-                            dueCount: due.length,
+                            dueCount: dueCount,
                             completed: completed,
                             streakDays: streakDays,
                             todayProgress: todayProgress,
@@ -281,6 +306,52 @@ class _ReviewHomePageState extends ConsumerState<ReviewHomePage> {
     }
   }
 
+  Future<void> _relearnDeck(String folder) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('重新学习整个牌组'),
+        content: const Text('这会清除该牌组的复习进度，并将所有卡片放回未学习状态。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('重新学习'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+
+    try {
+      final account = ref.read(currentAccountProvider);
+      if (account == null) return;
+      final count = await ref
+          .read(contentRepositoryProvider)
+          .relearnDeck(accountId: account.id, folder: folder);
+      await ref
+          .read(sharedPreferencesProvider)
+          .remove(reviewStudySessionKey(account.id, folder));
+      ref.invalidate(cardsProvider);
+      ref.invalidate(reviewEventsProvider);
+      await ref
+          .read(syncControllerProvider.notifier)
+          .sync(reason: 'relearn-deck');
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('已将 $count 张卡片放回未学习状态')));
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('重新学习失败，请稍后重试')));
+    }
+  }
+
   Future<void> _refreshReview(WidgetRef ref) async {
     await ref
         .read(syncControllerProvider.notifier)
@@ -291,10 +362,6 @@ class _ReviewHomePageState extends ConsumerState<ReviewHomePage> {
     await ref.read(reviewEventsProvider.future);
   }
 
-  static bool _sameDay(DateTime left, DateTime right) =>
-      left.year == right.year &&
-      left.month == right.month &&
-      left.day == right.day;
   static int _streakDays(List<ReviewEventModel> events) {
     final reviewedDays = events
         .map(
@@ -400,13 +467,14 @@ class _CurrentDeckCard extends StatelessWidget {
     required this.cardCount,
     required this.compact,
     required this.onTap,
+    required this.onRelearn,
   });
 
   final String? folder;
   final int cardCount;
   final bool compact;
   final VoidCallback? onTap;
-
+  final VoidCallback? onRelearn;
   @override
   Widget build(BuildContext context) => Material(
     color: Colors.white,
@@ -481,6 +549,19 @@ class _CurrentDeckCard extends StatelessWidget {
                 ),
               ),
               const SizedBox(width: 6),
+              IconButton(
+                tooltip: '整个牌组重新学习',
+                onPressed: onRelearn,
+                visualDensity: VisualDensity.compact,
+                padding: EdgeInsets.zero,
+                icon: Icon(
+                  Icons.restart_alt_rounded,
+                  color: onRelearn == null
+                      ? const Color(0xffb5beb8)
+                      : _ReviewColors.green,
+                  size: compact ? 20 : 22,
+                ),
+              ),
               Icon(
                 Icons.unfold_more_rounded,
                 color: onTap == null

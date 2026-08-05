@@ -25,6 +25,36 @@ void main() {
     expect(queue.map((card) => card.id), ['new-1', 'new-2', 'review-1']);
   });
 
+  test('review queue follows card creation order while applying limits', () {
+    final oldReview = _card(
+      'old-review',
+      FsrsState.review,
+      createdAt: DateTime(2026, 1, 1),
+    );
+    final newCard = _card(
+      'new-card',
+      FsrsState.newCard,
+      createdAt: DateTime(2026, 1, 2),
+    );
+    final recentReview = _card(
+      'recent-review',
+      FsrsState.review,
+      createdAt: DateTime(2026, 1, 3),
+    );
+
+    final queue = buildReviewQueue(
+      cards: [recentReview, newCard, oldReview],
+      settings: const ReviewSettings(newCardsPerDay: 1, reviewsPerDay: 2),
+      folder: '默认牌组',
+      now: DateTime(2026, 1, 4),
+    );
+
+    expect(queue.map((card) => card.id), [
+      'old-review',
+      'new-card',
+      'recent-review',
+    ]);
+  });
   test('review settings are persisted per account', () async {
     SharedPreferences.setMockInitialValues({});
     final preferences = await SharedPreferences.getInstance();
@@ -68,8 +98,8 @@ void main() {
   });
 }
 
-CardModel _card(String id, FsrsState state) {
-  final due = DateTime(2026, 1, 1);
+CardModel _card(String id, FsrsState state, {DateTime? createdAt}) {
+  final due = createdAt ?? DateTime(2026, 1, 1);
   return CardModel(
     id: id,
     accountId: 'account-a',

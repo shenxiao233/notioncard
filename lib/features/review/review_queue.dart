@@ -12,20 +12,27 @@ List<CardModel> buildReviewQueue({
     return !card.suspended &&
         !card.dueAt.isAfter(currentTime) &&
         (folder == null || card.folder == folder);
-  });
+  }).toList()..sort(_compareCardOrder);
 
-  final newCards = <CardModel>[];
-  final scheduledCards = <CardModel>[];
+  final queue = <CardModel>[];
+  var newCards = 0;
+  var scheduledCards = 0;
   for (final card in due) {
     if (card.fsrs.state == FsrsState.newCard) {
-      newCards.add(card);
+      if (newCards >= settings.newCardsPerDay) continue;
+      newCards++;
     } else {
-      scheduledCards.add(card);
+      if (scheduledCards >= settings.reviewsPerDay) continue;
+      scheduledCards++;
     }
+    queue.add(card);
   }
 
-  return [
-    ...newCards.take(settings.newCardsPerDay),
-    ...scheduledCards.take(settings.reviewsPerDay),
-  ];
+  return queue;
+}
+
+int _compareCardOrder(CardModel left, CardModel right) {
+  final created = left.createdAt.compareTo(right.createdAt);
+  if (created != 0) return created;
+  return left.id.compareTo(right.id);
 }

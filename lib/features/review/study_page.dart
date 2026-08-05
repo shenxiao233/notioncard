@@ -4,7 +4,6 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../app/app_providers.dart';
 import '../../core/models/card_model.dart';
@@ -12,6 +11,7 @@ import '../../core/widgets/empty_state.dart';
 import '../../core/widgets/markdown_content.dart';
 import 'review_queue.dart';
 import 'review_settings.dart';
+import 'review_session.dart';
 
 const _studyBackground = Color(0xfff8faf9);
 const _studyGreen = Color(0xff319a70);
@@ -129,10 +129,11 @@ class _StudyPageState extends ConsumerState<StudyPage> {
     final account = ref.read(currentAccountProvider);
     if (account == null) return;
 
-    _sessionKey = _studySessionKey(account.id, widget.selectedFolder);
-    final snapshot = _loadSession(
+    _sessionKey = reviewStudySessionKey(account.id, widget.selectedFolder);
+    final snapshot = loadReviewSession(
       ref.read(sharedPreferencesProvider),
-      _sessionKey!,
+      account.id,
+      widget.selectedFolder,
     );
     final savedQueueIds =
         snapshot?.queueIds ?? limitedQueue.map((card) => card.id).toList();
@@ -207,7 +208,7 @@ class _StudyPageState extends ConsumerState<StudyPage> {
     final queueIds = _queueIds;
     if (key == null || queueIds == null) return Future<void>.value();
     final payload = jsonEncode({
-      'date': _todayKey(DateTime.now()),
+      'date': reviewDateKey(DateTime.now()),
       'queueIds': queueIds,
       'completedIds': _completedCardIds.toList(),
     });
@@ -221,48 +222,8 @@ class _StudyPageState extends ConsumerState<StudyPage> {
     return write;
   }
 
-  static String _studySessionKey(String accountId, String? folder) {
-    final encodedFolder = base64UrlEncode(utf8.encode(folder ?? '__all__'));
-    return 'review.study_session.$accountId.$encodedFolder';
-  }
-
-  static _StudySessionSnapshot? _loadSession(
-    SharedPreferences preferences,
-    String key,
-  ) {
-    final raw = preferences.getString(key);
-    if (raw == null || raw.isEmpty) return null;
-    try {
-      final data = jsonDecode(raw);
-      if (data is! Map<String, dynamic> ||
-          data['date'] != _todayKey(DateTime.now())) {
-        return null;
-      }
-      final queueIds = (data['queueIds'] as List?)
-          ?.whereType<String>()
-          .toList();
-      final completedIds = (data['completedIds'] as List?)
-          ?.whereType<String>()
-          .toSet();
-      if (queueIds == null || completedIds == null) return null;
-      return _StudySessionSnapshot(
-        queueIds: queueIds,
-        completedIds: completedIds,
-      );
-    } catch (_) {
-      return null;
-    }
-  }
-
-  static String _todayKey(DateTime value) =>
-      '${value.year.toString().padLeft(4, '0')}-'
-      '${value.month.toString().padLeft(2, '0')}-'
-      '${value.day.toString().padLeft(2, '0')}';
-
   static bool _sameDay(DateTime left, DateTime right) =>
-      left.year == right.year &&
-      left.month == right.month &&
-      left.day == right.day;
+      isSameReviewDay(left, right);
 
   void _select(CardModel card, String key) {
     if (_answered) return;
@@ -446,16 +407,6 @@ class _StudyPageState extends ConsumerState<StudyPage> {
       .replaceAll(RegExp(r'[#*_`>\[\]]'), '')
       .replaceAll(RegExp(r'\s+'), ' ')
       .trim();
-}
-
-class _StudySessionSnapshot {
-  const _StudySessionSnapshot({
-    required this.queueIds,
-    required this.completedIds,
-  });
-
-  final List<String> queueIds;
-  final Set<String> completedIds;
 }
 
 class _StudyCard extends StatefulWidget {
