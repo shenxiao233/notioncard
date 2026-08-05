@@ -1,6 +1,10 @@
+import 'dart:async';
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../app/app_providers.dart';
 import '../../core/models/card_model.dart';
@@ -29,9 +33,11 @@ class _StudyPageState extends ConsumerState<StudyPage> {
   bool _answered = false;
   bool _saving = false;
   ReviewRating? _rating;
-  int _completed = 0;
+  final _completedCardIds = <String>{};
   final _ratingCounts = <ReviewRating, int>{};
   List<String>? _queueIds;
+  String? _sessionKey;
+  bool _sessionInitialized = false;
   bool _favorite = false;
 
   @override
@@ -56,23 +62,26 @@ class _StudyPageState extends ConsumerState<StudyPage> {
                 settings: settings,
                 folder: widget.selectedFolder,
               );
-              _queueIds ??= limitedQueue.map((card) => card.id).toList();
               final cardsById = {for (final card in values) card.id: card};
-              final queue = _queueIds!
+              _initializeSession(
+                limitedQueue: limitedQueue,
+                cardsById: cardsById,
+                events: ref.read(reviewEventsProvider).valueOrNull,
+              );
+              final queueIds = _reconcileQueue(cardsById);
+              final queue = queueIds
                   .map((id) => cardsById[id])
                   .whereType<CardModel>()
-                  .where(
-                    (card) =>
-                        widget.selectedFolder == null ||
-                        card.folder == widget.selectedFolder,
-                  )
                   .toList();
+              final completed = _completedCardIds
+                  .where((id) => queue.any((card) => card.id == id))
+                  .length;
               if (queue.isEmpty || _index >= queue.length) {
-                return _Finished(completed: _completed, counts: _ratingCounts);
+                return _Finished(completed: completed, counts: _ratingCounts);
               }
 
               final card = queue[_index];
-              final todayTotal = queue.length + _completed;
+              final todayTotal = queue.length;
               final previews = {
                 for (final rating in ReviewRating.values)
                   rating: _nextDueLabel(card, rating),
@@ -81,7 +90,7 @@ class _StudyPageState extends ConsumerState<StudyPage> {
               return _StudyCard(
                 key: ValueKey(card.id),
                 card: card,
-                todayCompleted: _completed,
+                todayCompleted: completed,
                 todayTotal: todayTotal,
                 selected: _selected,
                 answered: _answered,
@@ -101,6 +110,146 @@ class _StudyPageState extends ConsumerState<StudyPage> {
       ),
     );
   }
+
+  void _initializeSession({
+    required List<CardModel> limitedQueue,
+    required Map<String, CardModel> cardsById,
+    required List<ReviewEventModel>? events,
+  }) {
+    if (_sessionInitialized) return;
+    final account = ref.read(currentAccountProvider);
+    if (account == null) return;
+
+    _sessionKey = _studySessionKey(account.id, widget.selectedFolder);
+    final snapshot = _loadSession(
+      ref.read(sharedPreferencesProvider),
+      _sessionKey!,
+    );
+    final savedQueueIds =
+        snapshot?.queueIds ?? limitedQueue.map((card) => card.id).toList();
+    _queueIds = _activeQueueIds(savedQueueIds, cardsById);
+    final completedIds =
+        snapshot?.completedIds ??
+        _completedIdsFromEvents(events, _queueIds!, cardsById);
+    _completedCardIds.addAll(completedIds.where(_queueIds!.toSet().contains));
+    _index = _firstPendingIndex(_queueIds!, _completedCardIds);
+    _sessionInitialized = true;
+    unawaited(_persistSession());
+  }
+
+  List<String> _reconcileQueue(Map<String, CardModel> cardsById) {
+    final currentQueueIds = _queueIds ?? const <String>[];
+    final activeQueueIds = _activeQueueIds(currentQueueIds, cardsById);
+    final changed =
+        activeQueueIds.length != currentQueueIds.length ||
+        activeQueueIds.asMap().entries.any(
+          (entry) => entry.value != currentQueueIds[entry.key],
+        );
+    if (changed) {
+      _queueIds = activeQueueIds;
+      _completedCardIds.retainAll(activeQueueIds.toSet());
+      _index = _firstPendingIndex(activeQueueIds, _completedCardIds);
+      unawaited(_persistSession());
+    }
+    return activeQueueIds;
+  }
+
+  List<String> _activeQueueIds(
+    List<String> queueIds,
+    Map<String, CardModel> cardsById,
+  ) {
+    return queueIds.where((id) {
+      final card = cardsById[id];
+      return card != null &&
+          (widget.selectedFolder == null ||
+              card.folder == widget.selectedFolder);
+    }).toList();
+  }
+
+  Set<String> _completedIdsFromEvents(
+    List<ReviewEventModel>? events,
+    List<String> queueIds,
+    Map<String, CardModel> cardsById,
+  ) {
+    if (events == null) return <String>{};
+    final queueSet = queueIds.toSet();
+    final now = DateTime.now();
+    return events
+        .where(
+          (event) =>
+              (widget.selectedFolder == null ||
+                  event.folder == widget.selectedFolder) &&
+              _sameDay(event.reviewedAt, now) &&
+              queueSet.contains(event.cardId) &&
+              cardsById.containsKey(event.cardId),
+        )
+        .map((event) => event.cardId)
+        .toSet();
+  }
+
+  int _firstPendingIndex(List<String> queueIds, Set<String> completedIds) {
+    final index = queueIds.indexWhere((id) => !completedIds.contains(id));
+    return index == -1 ? queueIds.length : index;
+  }
+
+  Future<void> _persistSession() async {
+    final key = _sessionKey;
+    final queueIds = _queueIds;
+    if (key == null || queueIds == null) return;
+    await ref
+        .read(sharedPreferencesProvider)
+        .setString(
+          key,
+          jsonEncode({
+            'date': _todayKey(DateTime.now()),
+            'queueIds': queueIds,
+            'completedIds': _completedCardIds.toList(),
+          }),
+        );
+  }
+
+  static String _studySessionKey(String accountId, String? folder) {
+    final encodedFolder = base64UrlEncode(utf8.encode(folder ?? '__all__'));
+    return 'review.study_session.$accountId.$encodedFolder';
+  }
+
+  static _StudySessionSnapshot? _loadSession(
+    SharedPreferences preferences,
+    String key,
+  ) {
+    final raw = preferences.getString(key);
+    if (raw == null || raw.isEmpty) return null;
+    try {
+      final data = jsonDecode(raw);
+      if (data is! Map<String, dynamic> ||
+          data['date'] != _todayKey(DateTime.now())) {
+        return null;
+      }
+      final queueIds = (data['queueIds'] as List?)
+          ?.whereType<String>()
+          .toList();
+      final completedIds = (data['completedIds'] as List?)
+          ?.whereType<String>()
+          .toSet();
+      if (queueIds == null || completedIds == null) return null;
+      return _StudySessionSnapshot(
+        queueIds: queueIds,
+        completedIds: completedIds,
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
+  static String _todayKey(DateTime value) =>
+      '${value.year.toString().padLeft(4, '0')}-'
+      '${value.month.toString().padLeft(2, '0')}-'
+      '${value.day.toString().padLeft(2, '0')}';
+
+  static bool _sameDay(DateTime left, DateTime right) =>
+      left.year == right.year &&
+      left.month == right.month &&
+      left.day == right.day;
 
   void _select(CardModel card, String key) {
     if (_answered) return;
@@ -161,13 +310,14 @@ class _StudyPageState extends ConsumerState<StudyPage> {
       ref.invalidate(cardsProvider);
       ref.invalidate(reviewEventsProvider);
       setState(() {
-        _completed++;
+        _completedCardIds.add(card.id);
         _index++;
         _selected.clear();
         _answered = false;
         _rating = null;
         _favorite = false;
       });
+      await _persistSession();
     } catch (_) {
       if (mounted) {
         ScaffoldMessenger.of(
@@ -283,6 +433,16 @@ class _StudyPageState extends ConsumerState<StudyPage> {
       .replaceAll(RegExp(r'[#*_`>\[\]]'), '')
       .replaceAll(RegExp(r'\s+'), ' ')
       .trim();
+}
+
+class _StudySessionSnapshot {
+  const _StudySessionSnapshot({
+    required this.queueIds,
+    required this.completedIds,
+  });
+
+  final List<String> queueIds;
+  final Set<String> completedIds;
 }
 
 class _StudyCard extends StatefulWidget {
