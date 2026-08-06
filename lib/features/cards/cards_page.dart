@@ -108,71 +108,78 @@ class _DeckCardsPageState extends ConsumerState<DeckCardsPage> {
     final cards = ref.watch(cardsProvider);
     return Scaffold(
       backgroundColor: AppVisualColors.background,
-      body: cards.when(
-        loading: () => const Center(
-          child: CircularProgressIndicator(color: AppVisualColors.green),
-        ),
-        error: (error, _) =>
-            _CardsError(onRetry: () => ref.invalidate(cardsProvider)),
-        data: (values) {
-          final all = values
-              .where((card) => _folderOf(card) == widget.folder)
-              .toList();
-          final filtered = _filtered(all);
-          return RefreshIndicator(
-            onRefresh: _refreshCards,
-            child: ListView(
-              physics: const AlwaysScrollableScrollPhysics(),
-              padding: const EdgeInsets.fromLTRB(16, 12, 16, 32),
-              children: [
-                Align(
-                  alignment: Alignment.centerRight,
-                  child: AppVisualIconButton(
-                    icon: Icons.delete_outline_rounded,
-                    onPressed: () =>
-                        _confirmDeleteDeck(cards.valueOrNull ?? const []),
+      body: SafeArea(
+        bottom: false,
+        child: cards.when(
+          loading: () => const Center(
+            child: CircularProgressIndicator(color: AppVisualColors.green),
+          ),
+          error: (error, _) =>
+              _CardsError(onRetry: () => ref.invalidate(cardsProvider)),
+          data: (values) {
+            final all = values
+                .where((card) => _folderOf(card) == widget.folder)
+                .toList();
+            final filtered = _filtered(all);
+            return RefreshIndicator(
+              onRefresh: _refreshCards,
+              child: ListView(
+                physics: const AlwaysScrollableScrollPhysics(),
+                padding: const EdgeInsets.fromLTRB(16, 22, 16, 28),
+                children: [
+                  _DeckHeader(folder: widget.folder, cards: all),
+                  const SizedBox(height: 22),
+                  _SearchBar(
+                    controller: _searchController,
+                    query: _query,
+                    hasFilters:
+                        _type != null ||
+                        _dueOnly != null ||
+                        _sort != _CardSort.due,
+                    onChanged: (value) => setState(() => _query = value),
+                    onClear: () {
+                      _searchController.clear();
+                      setState(() => _query = '');
+                    },
+                    onFilter: _showFilterSheet,
                   ),
-                ),
-                const SizedBox(height: 16),
-                _DeckHeader(folder: widget.folder, cards: all),
-                const SizedBox(height: 14),
-                _SearchBar(
-                  controller: _searchController,
-                  query: _query,
-                  hasFilters: _type != null || _dueOnly != null,
-                  onChanged: (value) => setState(() => _query = value),
-                  onClear: () {
-                    _searchController.clear();
-                    setState(() => _query = '');
-                  },
-                  onFilter: _showFilterSheet,
-                  onSort: _showSortSheet,
-                ),
-                const SizedBox(height: 16),
-                if (filtered.isEmpty)
-                  EmptyState(
-                    title: all.isEmpty ? '牌组为空' : '没有匹配的卡片',
-                    message: all.isEmpty ? '可以从桌面端同步卡片到这里。' : '尝试清除搜索或筛选条件。',
-                    icon: Icons.style_outlined,
-                    action: all.isEmpty || !_hasFilters
-                        ? null
-                        : OutlinedButton(
-                            onPressed: _clearFilters,
-                            child: const Text('清除筛选'),
-                          ),
-                  )
-                else
-                  ...filtered.map(
-                    (card) => _CardListItem(
-                      card: card,
-                      onDelete: () => _confirmDeleteCard(card),
+                  const SizedBox(height: 18),
+                  if (filtered.isEmpty)
+                    EmptyState(
+                      title: all.isEmpty ? '牌组为空' : '没有匹配的卡片',
+                      message: all.isEmpty
+                          ? '可以从桌面端同步卡片到这里。'
+                          : '尝试清除搜索或筛选条件。',
+                      icon: Icons.style_outlined,
+                      action: all.isEmpty || !_hasFilters
+                          ? null
+                          : OutlinedButton(
+                              onPressed: _clearFilters,
+                              child: const Text('清除筛选'),
+                            ),
+                    )
+                  else
+                    ...filtered.map(
+                      (card) => _CardListItem(
+                        card: card,
+                        onDelete: () => _confirmDeleteCard(card),
+                      ),
                     ),
-                  ),
-              ],
-            ),
-          );
-        },
+                ],
+              ),
+            );
+          },
+        ),
       ),
+      floatingActionButton: FloatingActionButton(
+        tooltip: '新增卡片',
+        onPressed: _showAddCardSheet,
+        backgroundColor: AppVisualColors.green,
+        foregroundColor: Colors.white,
+        elevation: 5,
+        child: const Icon(Icons.add_rounded, size: 30),
+      ),
+      floatingActionButtonLocation: FloatingActionButtonLocation.endFloat,
     );
   }
 
@@ -180,7 +187,10 @@ class _DeckCardsPageState extends ConsumerState<DeckCardsPage> {
       card.folder.trim().isEmpty ? '未分类' : card.folder;
 
   bool get _hasFilters =>
-      _query.trim().isNotEmpty || _type != null || _dueOnly != null;
+      _query.trim().isNotEmpty ||
+      _type != null ||
+      _dueOnly != null ||
+      _sort != _CardSort.due;
 
   List<CardModel> _filtered(List<CardModel> values) {
     final query = _query.trim().toLowerCase();
@@ -208,6 +218,7 @@ class _DeckCardsPageState extends ConsumerState<DeckCardsPage> {
       _query = '';
       _type = null;
       _dueOnly = null;
+      _sort = _CardSort.due;
     });
   }
 
@@ -222,6 +233,7 @@ class _DeckCardsPageState extends ConsumerState<DeckCardsPage> {
   Future<void> _showFilterSheet() async {
     var selectedType = _type;
     var selectedDue = _dueOnly;
+    var selectedSort = _sort;
     await showModalBottomSheet<void>(
       context: context,
       builder: (sheetContext) => StatefulBuilder(
@@ -256,6 +268,22 @@ class _DeckCardsPageState extends ConsumerState<DeckCardsPage> {
                 ],
                 onChanged: (value) => setSheetState(() => selectedDue = value),
               ),
+              const SizedBox(height: 12),
+              DropdownButtonFormField<_CardSort>(
+                initialValue: selectedSort,
+                decoration: const InputDecoration(labelText: '排序方式'),
+                items: _CardSort.values
+                    .map(
+                      (sort) => DropdownMenuItem(
+                        value: sort,
+                        child: Text(_sortLabel(sort)),
+                      ),
+                    )
+                    .toList(),
+                onChanged: (value) {
+                  if (value != null) setSheetState(() => selectedSort = value);
+                },
+              ),
               const SizedBox(height: 18),
               SizedBox(
                 width: double.infinity,
@@ -264,6 +292,7 @@ class _DeckCardsPageState extends ConsumerState<DeckCardsPage> {
                     setState(() {
                       _type = selectedType;
                       _dueOnly = selectedDue;
+                      _sort = selectedSort;
                     });
                     Navigator.of(sheetContext).pop();
                   },
@@ -277,30 +306,60 @@ class _DeckCardsPageState extends ConsumerState<DeckCardsPage> {
     );
   }
 
-  Future<void> _showSortSheet() async {
-    final selected = await showModalBottomSheet<_CardSort>(
+  Future<void> _showAddCardSheet() async {
+    final draft = await showModalBottomSheet<_NewCardDraft>(
       context: context,
-      builder: (context) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: _CardSort.values
-              .map(
-                (sort) => ListTile(
-                  leading: Icon(
-                    sort == _sort
-                        ? Icons.radio_button_checked
-                        : Icons.radio_button_unchecked,
-                  ),
-                  title: Text(_sortLabel(sort)),
-                  selected: sort == _sort,
-                  onTap: () => Navigator.of(context).pop(sort),
-                ),
-              )
-              .toList(),
-        ),
+      isScrollControlled: true,
+      builder: (context) => const _AddCardSheet(),
+    );
+    if (draft == null || !mounted) return;
+
+    final account = ref.read(currentAccountProvider);
+    if (account == null) return;
+    final now = DateTime.now();
+    final card = CardModel(
+      id: 'local-card-${now.microsecondsSinceEpoch}',
+      accountId: account.id,
+      type: CardType.note,
+      folder: widget.folder == '未分类' ? '' : widget.folder,
+      question: draft.question,
+      options: const {},
+      answer: const [],
+      noteContent: draft.noteContent,
+      explanation: '',
+      tags: const [],
+      dueAt: now,
+      createdAt: now,
+      updatedAt: now,
+      reviews: 0,
+      mastery: '',
+      suspended: false,
+      fsrs: FsrsSnapshot(
+        state: FsrsState.newCard,
+        dueAt: now,
+        stability: 0,
+        difficulty: 5,
+        reps: 0,
+        lapses: 0,
       ),
     );
-    if (selected != null && mounted) setState(() => _sort = selected);
+
+    try {
+      await ref.read(contentRepositoryProvider).createCard(card);
+      ref.invalidate(cardsProvider);
+      ref.invalidate(pendingSyncProvider);
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('卡片已添加，等待同步。')));
+      }
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('添加卡片失败：$error')),
+        );
+      }
+    }
   }
 
   String _sortLabel(_CardSort sort) => switch (sort) {
@@ -327,30 +386,6 @@ class _DeckCardsPageState extends ConsumerState<DeckCardsPage> {
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(const SnackBar(content: Text('卡片已删除，等待同步。')));
-    }
-  }
-
-  Future<void> _confirmDeleteDeck(Iterable<CardModel> allCards) async {
-    final count = allCards
-        .where((card) => _folderOf(card) == widget.folder)
-        .length;
-    final confirmed = await _confirm(
-      title: '删除整个牌组？',
-      message: '将删除牌组中的 $count 张卡片，并在下次同步时同步删除。',
-    );
-    if (!confirmed || !mounted) return;
-    final account = ref.read(currentAccountProvider);
-    if (account == null) return;
-    await ref
-        .read(contentRepositoryProvider)
-        .deleteDeck(accountId: account.id, folder: widget.folder);
-    ref.invalidate(cardsProvider);
-    ref.invalidate(pendingSyncProvider);
-    if (mounted) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('牌组已删除，等待同步。')));
-      context.pop();
     }
   }
 
@@ -582,40 +617,79 @@ class _DeckHeader extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final due = cards.where((card) => card.isDue).length;
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-      decoration: BoxDecoration(
-        color: AppVisualColors.paleGreen,
-        borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: const Color(0xffedf4eb)),
-      ),
-      child: Row(
-        children: [
-          const Icon(
-            Icons.layers_rounded,
-            color: AppVisualColors.green,
-            size: 20,
-          ),
-          const SizedBox(width: 9),
-          Expanded(
-            child: Text(
-              '$folder · ${cards.length} 张卡片',
-              style: const TextStyle(
-                color: AppVisualColors.ink,
-                fontSize: 14,
-                fontWeight: FontWeight.w700,
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text.rich(
+                _titleSpan,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
               ),
-            ),
+              const SizedBox(height: 5),
+              Text(
+                '${cards.length} 张卡片',
+                style: const TextStyle(
+                  color: AppVisualColors.muted,
+                  fontSize: 14,
+                  height: 1.25,
+                ),
+              ),
+            ],
           ),
-          Text(
+        ),
+        const SizedBox(width: 12),
+        Container(
+          margin: const EdgeInsets.only(top: 3),
+          padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 7),
+          decoration: BoxDecoration(
+            color: AppVisualColors.softGreen,
+            borderRadius: BorderRadius.circular(16),
+          ),
+          child: Text(
             '$due 待复习',
             style: const TextStyle(
               color: AppVisualColors.darkGreen,
               fontSize: 12,
               fontWeight: FontWeight.w600,
+              height: 1.2,
             ),
           ),
-        ],
+        ),
+      ],
+    );
+  }
+
+  InlineSpan get _titleSpan {
+    final match = RegExp(r'(\d+\s*词)$').firstMatch(folder);
+    if (match == null) {
+      return TextSpan(
+        text: folder,
+        style: TextStyle(
+          color: AppVisualColors.ink,
+          fontSize: 24,
+          fontWeight: FontWeight.w700,
+          height: 1.15,
+        ),
+      );
+    }
+    final index = match.start;
+    return TextSpan(
+      children: [
+        TextSpan(text: folder.substring(0, index)),
+        TextSpan(
+          text: folder.substring(index),
+          style: const TextStyle(color: AppVisualColors.green),
+        ),
+      ],
+      style: const TextStyle(
+        color: AppVisualColors.ink,
+        fontSize: 24,
+        fontWeight: FontWeight.w700,
+        height: 1.15,
       ),
     );
   }
@@ -629,7 +703,6 @@ class _SearchBar extends StatelessWidget {
     required this.onChanged,
     required this.onClear,
     required this.onFilter,
-    required this.onSort,
   });
 
   final TextEditingController controller;
@@ -638,54 +711,75 @@ class _SearchBar extends StatelessWidget {
   final ValueChanged<String> onChanged;
   final VoidCallback onClear;
   final VoidCallback onFilter;
-  final VoidCallback onSort;
 
   @override
-  Widget build(BuildContext context) => Row(
-    children: [
-      Expanded(
-        child: TextField(
-          controller: controller,
-          onChanged: onChanged,
-          decoration: InputDecoration(
-            prefixIcon: const Icon(
-              Icons.search_rounded,
-              color: AppVisualColors.green,
-            ),
-            suffixIcon: query.isEmpty
-                ? null
-                : IconButton(
-                    onPressed: onClear,
-                    icon: const Icon(Icons.clear_rounded),
-                  ),
-            hintText: '搜索题干或标签',
-            hintStyle: const TextStyle(
-              color: AppVisualColors.muted,
-              fontSize: 13,
-            ),
-            fillColor: Colors.white,
-            enabledBorder: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(17),
-              borderSide: const BorderSide(color: Color(0xffe8eee9)),
-            ),
-            focusedBorder: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(17),
-              borderSide: const BorderSide(
-                color: AppVisualColors.green,
-                width: 1.4,
+  Widget build(BuildContext context) => Container(
+    height: 58,
+    padding: const EdgeInsets.only(left: 16, right: 6),
+    decoration: BoxDecoration(
+      color: Colors.white,
+      borderRadius: BorderRadius.circular(29),
+      border: Border.all(color: const Color(0xffe8eee9)),
+      boxShadow: const [
+        BoxShadow(
+          color: Color(0x0b000000),
+          blurRadius: 14,
+          offset: Offset(0, 5),
+        ),
+      ],
+    ),
+    child: Row(
+      children: [
+        const Icon(
+          Icons.search_rounded,
+          color: AppVisualColors.muted,
+          size: 22,
+        ),
+        const SizedBox(width: 10),
+        Expanded(
+          child: TextField(
+            controller: controller,
+            onChanged: onChanged,
+            textInputAction: TextInputAction.search,
+            cursorColor: AppVisualColors.green,
+            decoration: const InputDecoration(
+              border: InputBorder.none,
+              isDense: true,
+              contentPadding: EdgeInsets.zero,
+              hintText: '搜索题干或标签',
+              hintStyle: TextStyle(
+                color: AppVisualColors.muted,
+                fontSize: 13,
+                height: 1.25,
               ),
+            ),
+            style: const TextStyle(
+              color: AppVisualColors.ink,
+              fontSize: 14,
+              height: 1.25,
             ),
           ),
         ),
-      ),
-      const SizedBox(width: 8),
-      AppVisualIconButton(
-        onPressed: onFilter,
-        icon: hasFilters ? Icons.filter_alt_rounded : Icons.tune_rounded,
-      ),
-      const SizedBox(width: 6),
-      AppVisualIconButton(onPressed: onSort, icon: Icons.sort_rounded),
-    ],
+        if (query.isNotEmpty)
+          IconButton(
+            tooltip: '清除搜索',
+            onPressed: onClear,
+            icon: const Icon(Icons.clear_rounded, size: 19),
+            color: AppVisualColors.muted,
+            visualDensity: VisualDensity.compact,
+          ),
+        IconButton(
+          tooltip: '筛选和排序',
+          onPressed: onFilter,
+          icon: Icon(
+            hasFilters ? Icons.filter_alt_rounded : Icons.tune_rounded,
+            size: 21,
+          ),
+          color: hasFilters ? AppVisualColors.green : AppVisualColors.muted,
+          visualDensity: VisualDensity.compact,
+        ),
+      ],
+    ),
   );
 }
 
@@ -697,85 +791,216 @@ class _CardListItem extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final statusColor = card.suspended
-        ? AppVisualColors.muted
-        : card.isDue
-        ? AppVisualColors.amber
-        : AppVisualColors.green;
     return Container(
-      margin: const EdgeInsets.only(bottom: 8),
+      margin: const EdgeInsets.only(bottom: 12),
       decoration: BoxDecoration(
         color: Colors.white,
-        borderRadius: BorderRadius.circular(18),
+        borderRadius: BorderRadius.circular(20),
         boxShadow: const [
           BoxShadow(
             color: Color(0x0b000000),
-            blurRadius: 12,
-            offset: Offset(0, 4),
+            blurRadius: 16,
+            offset: Offset(0, 5),
           ),
         ],
       ),
       child: Material(
         color: Colors.transparent,
-        child: ListTile(
-          contentPadding: const EdgeInsets.symmetric(
-            horizontal: 12,
-            vertical: 3,
-          ),
-          leading: Container(
-            width: 38,
-            height: 38,
-            decoration: BoxDecoration(
-              color: statusColor.withValues(alpha: 0.12),
-              shape: BoxShape.circle,
-            ),
-            child: Icon(_typeIcon(card.type), color: statusColor, size: 18),
-          ),
-          title: Text(
-            card.question,
-            maxLines: 2,
-            overflow: TextOverflow.ellipsis,
-            style: const TextStyle(
-              color: AppVisualColors.ink,
-              fontSize: 14,
-              fontWeight: FontWeight.w600,
-              height: 1.3,
-            ),
-          ),
-          subtitle: Padding(
-            padding: const EdgeInsets.only(top: 4),
-            child: Text(
-              '${card.isDue ? '待复习' : '未到期'} · ${card.reviews} 次复习',
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(
-                color: AppVisualColors.muted,
-                fontSize: 11,
+        child: InkWell(
+          borderRadius: BorderRadius.circular(20),
+          onTap: () => context.push('/cards/${card.id}'),
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(minHeight: 112),
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(16, 14, 8, 14),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.center,
+                children: [
+                  Container(
+                    width: 44,
+                    height: 44,
+                    decoration: const BoxDecoration(
+                      color: AppVisualColors.softGreen,
+                      shape: BoxShape.circle,
+                    ),
+                    child: const Icon(
+                      Icons.lightbulb_outline_rounded,
+                      color: AppVisualColors.green,
+                      size: 22,
+                    ),
+                  ),
+                  const SizedBox(width: 14),
+                  Expanded(
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          card.question,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            color: AppVisualColors.ink,
+                            fontSize: 16,
+                            fontWeight: FontWeight.w700,
+                            height: 1.3,
+                          ),
+                        ),
+                        const SizedBox(height: 7),
+                        Text(
+                          '${card.isDue ? '待复习' : '未到期'} · ${card.reviews} 次复习',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            color: AppVisualColors.muted,
+                            fontSize: 13,
+                            height: 1.25,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  PopupMenuButton<String>(
+                    tooltip: '更多操作',
+                    onSelected: (value) {
+                      if (value == 'delete') onDelete();
+                    },
+                    icon: const Icon(
+                      Icons.more_horiz_rounded,
+                      color: AppVisualColors.muted,
+                    ),
+                    itemBuilder: (context) => const [
+                      PopupMenuItem(value: 'delete', child: Text('删除卡片')),
+                    ],
+                  ),
+                ],
               ),
             ),
           ),
-          trailing: PopupMenuButton<String>(
-            onSelected: (value) {
-              if (value == 'delete') onDelete();
-            },
-            icon: const Icon(
-              Icons.more_horiz_rounded,
-              color: AppVisualColors.muted,
-            ),
-            itemBuilder: (context) => const [
-              PopupMenuItem(value: 'delete', child: Text('删除卡片')),
-            ],
-          ),
-          onTap: () => context.push('/cards/${card.id}'),
         ),
       ),
     );
   }
+}
 
-  IconData _typeIcon(CardType type) => switch (type) {
-    CardType.single => Icons.radio_button_checked,
-    CardType.multiple => Icons.check_box_outlined,
-    CardType.trueFalse => Icons.rule,
-    CardType.note => Icons.lightbulb_outline,
-  };
+class _NewCardDraft {
+  const _NewCardDraft({required this.question, required this.noteContent});
+
+  final String question;
+  final String noteContent;
+}
+
+class _AddCardSheet extends StatefulWidget {
+  const _AddCardSheet();
+
+  @override
+  State<_AddCardSheet> createState() => _AddCardSheetState();
+}
+
+class _AddCardSheetState extends State<_AddCardSheet> {
+  final _questionController = TextEditingController();
+  final _noteController = TextEditingController();
+  String? _error;
+
+  @override
+  void dispose() {
+    _questionController.dispose();
+    _noteController.dispose();
+    super.dispose();
+  }
+
+  void _submit() {
+    final question = _questionController.text.trim();
+    if (question.isEmpty) {
+      setState(() => _error = '请输入题干或词条');
+      return;
+    }
+    Navigator.of(context).pop(
+      _NewCardDraft(
+        question: question,
+        noteContent: _noteController.text.trim(),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SafeArea(
+      child: Padding(
+        padding: EdgeInsets.fromLTRB(
+          20,
+          8,
+          20,
+          20 + MediaQuery.viewInsetsOf(context).bottom,
+        ),
+        child: SingleChildScrollView(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                '新增卡片',
+                style: TextStyle(
+                  color: AppVisualColors.ink,
+                  fontSize: 20,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+              const SizedBox(height: 5),
+              const Text(
+                '保存后会加入当前牌组，并在下次同步时上传。',
+                style: TextStyle(
+                  color: AppVisualColors.muted,
+                  fontSize: 13,
+                  height: 1.35,
+                ),
+              ),
+              const SizedBox(height: 18),
+              TextField(
+                controller: _questionController,
+                autofocus: true,
+                maxLines: 2,
+                textInputAction: TextInputAction.next,
+                decoration: const InputDecoration(
+                  labelText: '题干或词条',
+                  hintText: '例如：什么是间隔重复？',
+                ),
+                onChanged: (_) {
+                  if (_error != null) setState(() => _error = null);
+                },
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: _noteController,
+                maxLines: 4,
+                textInputAction: TextInputAction.newline,
+                decoration: const InputDecoration(
+                  labelText: '内容（可选）',
+                  hintText: '补充答案、解释或记忆提示',
+                ),
+              ),
+              if (_error != null) ...[
+                const SizedBox(height: 8),
+                Text(
+                  _error!,
+                  style: const TextStyle(
+                    color: Color(0xffb3261e),
+                    fontSize: 12,
+                  ),
+                ),
+              ],
+              const SizedBox(height: 18),
+              SizedBox(
+                width: double.infinity,
+                child: FilledButton.icon(
+                  onPressed: _submit,
+                  icon: const Icon(Icons.add_rounded, size: 19),
+                  label: const Text('添加卡片'),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 }

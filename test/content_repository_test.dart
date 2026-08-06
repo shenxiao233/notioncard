@@ -82,4 +82,46 @@ void main() {
       expect((payload['fsrs'] as Map)['state'], 'newCard');
     },
   );
+
+  test('createCard saves the card and queues a card upsert', () async {
+    final now = DateTime(2026, 8, 1);
+    final card = CardModel(
+      id: 'local-card-1',
+      accountId: 'account-1',
+      type: CardType.note,
+      folder: 'deck',
+      question: 'What is spaced repetition?',
+      options: const {},
+      answer: const [],
+      noteContent: 'Review information at increasing intervals.',
+      explanation: '',
+      tags: const ['study'],
+      dueAt: now,
+      createdAt: now,
+      updatedAt: now,
+      reviews: 0,
+      mastery: '',
+      suspended: false,
+      fsrs: FsrsSnapshot(
+        state: FsrsState.newCard,
+        dueAt: now,
+        stability: 0,
+        difficulty: 5,
+        reps: 0,
+        lapses: 0,
+      ),
+    );
+
+    await ContentRepository(database).createCard(card);
+
+    expect((await database.loadCards(card.accountId)).single.question,
+        card.question);
+    final queued = (await database.loadPendingSync(card.accountId)).single;
+    final payload = jsonDecode(queued.payload) as Map<String, dynamic>;
+    expect(queued.objectType, 'CARD');
+    expect(queued.objectId, card.id);
+    expect(queued.operation, SyncOperation.upsert);
+    expect(payload['question'], card.question);
+    expect(payload['folder'], card.folder);
+  });
 }

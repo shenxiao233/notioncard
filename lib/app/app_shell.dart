@@ -48,7 +48,7 @@ class _BottomNavigationBar extends StatelessWidget {
   static const _items = <(IconData, IconData, String, String)>[
     (Icons.home_outlined, Icons.home_rounded, '首页', '/review'),
     (Icons.menu_book_outlined, Icons.menu_book_rounded, '学习库', '/library'),
-    (Icons.favorite_border_rounded, Icons.favorite_rounded, '卡片', '/cards'),
+    (Icons.style_outlined, Icons.style_rounded, '卡片', '/cards'),
     (Icons.storefront_outlined, Icons.storefront_rounded, '市场', '/market'),
     (Icons.person_outline_rounded, Icons.person_rounded, '我的', '/settings'),
   ];
@@ -57,24 +57,21 @@ class _BottomNavigationBar extends StatelessWidget {
   Widget build(BuildContext context) {
     return SafeArea(
       top: false,
-      minimum: const EdgeInsets.fromLTRB(18, 0, 18, 12),
-      child: SizedBox(
-        height: 82,
-        child: Material(
-          color: Colors.white,
-          surfaceTintColor: Colors.transparent,
-          elevation: 2,
-          shadowColor: const Color(0x18000000),
-          borderRadius: BorderRadius.circular(22),
-          clipBehavior: Clip.antiAlias,
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 5),
-            child: Row(
-              children: [
-                for (var index = 0; index < _items.length; index++)
-                  Expanded(child: _item(context, index, _items[index])),
-              ],
-            ),
+      minimum: EdgeInsets.zero,
+      child: Material(
+        color: Colors.white,
+        surfaceTintColor: Colors.transparent,
+        child: Container(
+          height: 76,
+          padding: const EdgeInsets.fromLTRB(8, 6, 8, 4),
+          decoration: const BoxDecoration(
+            border: Border(top: BorderSide(color: Color(0xffe7ebe8))),
+          ),
+          child: Row(
+            children: [
+              for (var index = 0; index < _items.length; index++)
+                Expanded(child: _item(context, index, _items[index])),
+            ],
           ),
         ),
       ),
@@ -95,9 +92,9 @@ class _BottomNavigationBar extends StatelessWidget {
         message: item.$3,
         child: InkWell(
           onTap: selected ? null : () => context.go(item.$4),
-          borderRadius: BorderRadius.circular(24),
+          borderRadius: BorderRadius.circular(16),
           child: SizedBox(
-            height: 72,
+            height: 66,
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
@@ -109,33 +106,37 @@ class _BottomNavigationBar extends StatelessWidget {
                     selected ? item.$2 : item.$1,
                     key: ValueKey(selected),
                     color: selected
-                        ? const Color(0xff171918)
+                        ? const Color(0xff3e9d35)
                         : const Color(0xff5d605e),
-                    size: 24,
+                    size: 26,
                   ),
                 ),
-                const SizedBox(height: 3),
+                const SizedBox(height: 2),
                 Text(
                   item.$3,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: TextStyle(
                     color: selected
-                        ? const Color(0xff171918)
+                        ? const Color(0xff3e9d35)
                         : const Color(0xff4f5250),
-                    fontSize: 11,
-                    height: 1.15,
+                    fontSize: 12,
+                    height: 1.2,
                     fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
                   ),
                 ),
-                const SizedBox(height: 5),
-                AnimatedContainer(
-                  duration: const Duration(milliseconds: 160),
-                  width: selected ? 6 : 0,
-                  height: 6,
-                  decoration: const BoxDecoration(
-                    color: Color(0xffe22d2d),
-                    shape: BoxShape.circle,
+                const SizedBox(height: 4),
+                SizedBox(
+                  height: 5,
+                  child: AnimatedContainer(
+                    duration: const Duration(milliseconds: 160),
+                    width: selected ? 18 : 0,
+                    decoration: BoxDecoration(
+                      color: selected
+                          ? const Color(0xff3e9d35)
+                          : Colors.transparent,
+                      borderRadius: BorderRadius.circular(5),
+                    ),
                   ),
                 ),
               ],
