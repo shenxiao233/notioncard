@@ -34,6 +34,8 @@ void main() {
     );
     await tester.pumpAndSettle();
 
+    expect(find.byType(RefreshIndicator), findsOneWidget);
+
     final newCardRow = find.ancestor(
       of: find.text('每日新卡上限'),
       matching: find.byType(ListTile),
@@ -74,6 +76,8 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
+
+    expect(find.byType(RefreshIndicator), findsOneWidget);
 
     final reviewRow = find.ancestor(
       of: find.text('每日复习上限'),

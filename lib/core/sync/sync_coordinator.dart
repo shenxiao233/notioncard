@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:math';
 
+import 'package:dio/dio.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../database/app_database.dart';
@@ -17,6 +18,7 @@ class SyncCoordinator {
   static const _lastSyncKey = 'sync.last_sync';
   static const _fullSyncVersionKey = 'sync.full_sync_version';
   static const _fullSyncVersion = '1';
+  static const _batchSize = 100;
 
   final AppDatabase database;
   final ApiClient? apiClient;
@@ -37,52 +39,56 @@ class SyncCoordinator {
 
   Future<void> retryPending(String accountId) async {
     final items = await database.loadPendingSync(accountId);
-    for (final item in items.where(
-      (value) => value.status == SyncItemStatus.failed,
-    )) {
-      await database.enqueueSync(
-        SyncQueueItemModel(
-          id: item.id,
-          accountId: item.accountId,
-          objectType: item.objectType,
-          objectId: item.objectId,
-          operation: item.operation,
-          payload: item.payload,
-          status: SyncItemStatus.pending,
-          attempts: item.attempts,
-          lastError: null,
-          createdAt: item.createdAt,
-          updatedAt: DateTime.now(),
-        ),
-      );
-    }
+    final failedItems = items
+        .where((value) => value.status == SyncItemStatus.failed)
+        .map(
+          (item) => SyncQueueItemModel(
+            id: item.id,
+            accountId: item.accountId,
+            objectType: item.objectType,
+            objectId: item.objectId,
+            operation: item.operation,
+            payload: item.payload,
+            status: SyncItemStatus.pending,
+            attempts: item.attempts,
+            lastError: null,
+            createdAt: item.createdAt,
+            updatedAt: DateTime.now(),
+          ),
+        )
+        .toList();
+    if (failedItems.isEmpty) return;
+    await database.enqueueSyncItems(failedItems);
   }
 
-  Future<SyncReport> sync(String accountId) async {
+  Future<SyncReport> sync(String accountId, {CancelToken? cancelToken}) async {
     final client = apiClient;
     if (client == null) return const SyncReport();
 
     final items = await database.loadPendingSync(accountId);
     final groups = <String, List<SyncQueueItemModel>>{};
+    final legacyItemIds = <String>[];
     for (final item in items) {
       if (!_supportedObjectTypes.contains(item.objectType)) {
         // Older builds queued review events separately. Review state is now
         // part of the CARD payload, so these legacy entries must not poison a
         // valid batch with an object type rejected by the server.
-        await database.markSyncSynced(item.id, accountId);
+        legacyItemIds.add(item.id);
         continue;
       }
       groups
           .putIfAbsent(_objectKey(item.objectType, item.objectId), () => [])
           .add(item);
     }
+    await database.markSyncItemsSynced(accountId, legacyItemIds);
     final latestItems = groups.values.map((items) => items.last).toList();
+    final deviceId = latestItems.isEmpty ? null : await _deviceId();
     var synced = 0;
     var failed = 0;
     var conflicts = 0;
     var networkFailure = false;
-    for (var offset = 0; offset < latestItems.length; offset += 100) {
-      final batch = latestItems.skip(offset).take(100).toList();
+    for (var offset = 0; offset < latestItems.length; offset += _batchSize) {
+      final batch = latestItems.skip(offset).take(_batchSize).toList();
       final batchGroups = <String, List<SyncQueueItemModel>>{
         for (final item in batch)
           _objectKey(item.objectType, item.objectId):
@@ -97,14 +103,15 @@ class SyncCoordinator {
                 {
                   'objectType': item.objectType,
                   'objectId': item.objectId,
-                  'objectVersion': await _objectVersion(accountId, item),
+                  'objectVersion': _objectVersion(accountId, item),
                   'operation': item.operation.name,
                   if (item.operation == SyncOperation.upsert)
                     'data': _decodePayload(item.payload),
-                  'deviceId': await _deviceId(),
+                  'deviceId': deviceId,
                 },
             ],
           },
+          cancelToken: cancelToken,
         );
         final body = _stringMap(response.data);
         final responses = body?['responses'];
@@ -115,6 +122,7 @@ class SyncCoordinator {
           );
         }
         final handled = <String>{};
+        final syncedItemIds = <String>[];
         for (final raw in responses) {
           final result = _stringMap(raw);
           if (result == null) continue;
@@ -134,7 +142,12 @@ class SyncCoordinator {
           if (result['conflict'] == true) {
             conflicts++;
             if (_isRemoteDeletion(result)) {
-              await _removeRemoteObject(accountId, objectType, objectId, result);
+              await _removeRemoteObject(
+                accountId,
+                objectType,
+                objectId,
+                result,
+              );
             } else {
               await _applyRemotePayload(
                 accountId,
@@ -145,37 +158,41 @@ class SyncCoordinator {
             }
             for (final item in groupedItems) {
               synced++;
-              await database.markSyncSynced(item.id, accountId);
+              syncedItemIds.add(item.id);
             }
           } else {
             for (final item in groupedItems) {
               synced++;
-              await database.markSyncSynced(item.id, accountId);
+              syncedItemIds.add(item.id);
             }
           }
         }
+        await database.markSyncItemsSynced(accountId, syncedItemIds);
+        final missingItems = <SyncQueueItemModel>[];
         for (final entry in batchGroups.entries) {
           if (handled.contains(entry.key)) continue;
-          for (final item in entry.value) {
-            failed++;
-            await database.markSyncFailed(
-              item.id,
-              accountId,
-              'Server did not return a response for this item',
-            );
-          }
+          missingItems.addAll(entry.value);
         }
+        failed += missingItems.length;
+        await database.markSyncFailedItems(
+          accountId,
+          missingItems,
+          'Server did not return a response for this item',
+        );
       } on ApiException catch (error) {
         if (error.isNetworkFailure) {
           networkFailure = true;
           break;
         }
-        for (final group in batchGroups.values) {
-          for (final item in group) {
-            failed++;
-            await database.markSyncFailed(item.id, accountId, error.message);
-          }
-        }
+        final failedItems = batchGroups.values
+            .expand((group) => group)
+            .toList();
+        failed += failedItems.length;
+        await database.markSyncFailedItems(
+          accountId,
+          failedItems,
+          error.message,
+        );
       }
     }
     return SyncReport(
@@ -189,6 +206,7 @@ class SyncCoordinator {
   Future<FullSyncReport> fullSync(
     String accountId, {
     bool force = false,
+    CancelToken? cancelToken,
   }) async {
     final client = apiClient;
     if (client == null) return const FullSyncReport();
@@ -202,6 +220,7 @@ class SyncCoordinator {
     final response = await client.get(
       '/api/v2/sync/full',
       queryParameters: queryParameters,
+      cancelToken: cancelToken,
     );
     final body = _stringMap(response.data);
     final objects = body?['objects'];
@@ -214,6 +233,10 @@ class SyncCoordinator {
     var cards = 0;
     var documents = 0;
     var hasRemoteContent = false;
+    final cardsToSave = <String, CardModel>{};
+    final documentsToSave = <String, DocumentModel>{};
+    Map<String, DocumentModel>? localDocumentsById;
+    final serverVersions = <String, int>{};
     final remoteObjects = [
       ...(objects as List? ?? const <Object?>[]),
       ..._deletionObjects(body),
@@ -225,13 +248,14 @@ class SyncCoordinator {
       final objectUpdatedAt = object['updatedAt'];
       final objectType = _objectType(object);
       if (objectId == null || objectType == null) continue;
-      await _saveServerVersion(
-        accountId,
-        objectType,
-        objectId,
-        _version(object['objectVersion']),
-      );
+      final serverVersion = _version(object['objectVersion']);
+      if (serverVersion != null) {
+        serverVersions[_serverVersionKey(accountId, objectType, objectId)] =
+            serverVersion;
+      }
       if (_isRemoteDeletion(object)) {
+        cardsToSave.remove(objectId);
+        documentsToSave.remove(objectId);
         await _removeRemoteObject(accountId, objectType, objectId, object);
         continue;
       }
@@ -239,14 +263,14 @@ class SyncCoordinator {
       if (payload == null) continue;
       switch (objectType) {
         case 'CARD':
-          await database.saveCard(
-            _cardFromPayload(
-              accountId,
-              payload,
-              fallbackId: objectId,
-              fallbackUpdatedAt: objectUpdatedAt,
-            ),
+          final card = _cardFromPayload(
+            accountId,
+            payload,
+            fallbackId: objectId,
+            fallbackUpdatedAt: objectUpdatedAt,
           );
+          if (card.id.isEmpty) continue;
+          cardsToSave[card.id] = card;
           cards++;
           hasRemoteContent = true;
         case 'DOCUMENT':
@@ -257,11 +281,37 @@ class SyncCoordinator {
             fallbackUpdatedAt: objectUpdatedAt,
           );
           if (document.id.isEmpty) continue;
-          await _saveDocumentPreservingContent(accountId, document);
+          if (localDocumentsById == null) {
+            final localDocuments = await database.loadDocuments(accountId);
+            localDocumentsById = {
+              for (final value in localDocuments) value.id: value,
+            };
+          }
+          final localDocument = localDocumentsById[document.id];
+          final value = document.body.trim().isEmpty && localDocument != null
+              ? DocumentModel(
+                  id: document.id,
+                  accountId: document.accountId,
+                  folder: document.folder.isEmpty
+                      ? localDocument.folder
+                      : document.folder,
+                  title: document.title.isEmpty
+                      ? localDocument.title
+                      : document.title,
+                  body: localDocument.body,
+                  updatedAt: document.updatedAt,
+                )
+              : document;
+          documentsToSave[value.id] = value;
+          localDocumentsById[value.id] = value;
           documents++;
           hasRemoteContent = true;
       }
     }
+    await database.saveCards(cardsToSave.values);
+    await database.saveDocuments(documentsToSave.values);
+    await _saveServerVersions(serverVersions);
+
     if (force && hasRemoteContent) {
       await _removeSeedContent(
         accountId,
@@ -360,27 +410,32 @@ class SyncCoordinator {
 
   Future<void> _saveDocumentPreservingContent(
     String accountId,
-    DocumentModel document,
-  ) async {
-    final localDocument = (await database.loadDocuments(
-      accountId,
-    )).where((value) => value.id == document.id).firstOrNull;
-    if (document.body.trim().isEmpty && localDocument != null) {
-      await database.saveDocument(
-        DocumentModel(
-          id: document.id,
-          accountId: document.accountId,
-          folder: document.folder.isEmpty
-              ? localDocument.folder
-              : document.folder,
-          title: document.title.isEmpty ? localDocument.title : document.title,
-          body: localDocument.body,
-          updatedAt: document.updatedAt,
-        ),
-      );
-      return;
-    }
-    await database.saveDocument(document);
+    DocumentModel document, {
+    Map<String, DocumentModel>? localDocumentsById,
+  }) async {
+    final localDocument =
+        localDocumentsById?[document.id] ??
+        (localDocumentsById == null
+            ? (await database.loadDocuments(
+                accountId,
+              )).where((value) => value.id == document.id).firstOrNull
+            : null);
+    final value = document.body.trim().isEmpty && localDocument != null
+        ? DocumentModel(
+            id: document.id,
+            accountId: document.accountId,
+            folder: document.folder.isEmpty
+                ? localDocument.folder
+                : document.folder,
+            title: document.title.isEmpty
+                ? localDocument.title
+                : document.title,
+            body: localDocument.body,
+            updatedAt: document.updatedAt,
+          )
+        : document;
+    await database.saveDocument(value);
+    localDocumentsById?[value.id] = value;
   }
 
   Future<void> _removeSeedContent(
@@ -519,14 +574,12 @@ class SyncCoordinator {
         final documents = localDocuments.where(
           (document) => folders.contains(document.folder),
         );
-        for (final card in cards) {
-          idsToClear.add(card.id);
-          await database.deleteCard(card.id, accountId);
-        }
-        for (final document in documents) {
-          idsToClear.add(document.id);
-          await database.deleteDocument(document.id, accountId);
-        }
+        final cardIds = cards.map((card) => card.id).toSet();
+        final documentIds = documents.map((document) => document.id).toSet();
+        idsToClear.addAll(cardIds);
+        idsToClear.addAll(documentIds);
+        await database.deleteCardsByIds(accountId, cardIds);
+        await database.deleteDocumentsByIds(accountId, documentIds);
     }
     await database.markPendingSyncObjectsSynced(accountId, idsToClear);
   }
@@ -653,7 +706,7 @@ class SyncCoordinator {
     String objectId,
   ) => 'sync.object_version.$accountId.$objectType.$objectId';
 
-  Future<int> _objectVersion(String accountId, SyncQueueItemModel item) async {
+  int _objectVersion(String accountId, SyncQueueItemModel item) {
     final cached = _version(
       preferences?.getString(
         _serverVersionKey(accountId, item.objectType, item.objectId),
@@ -673,6 +726,14 @@ class SyncCoordinator {
       _serverVersionKey(accountId, objectType, objectId),
       version.toString(),
     );
+  }
+
+  Future<void> _saveServerVersions(Map<String, int> versions) async {
+    final prefs = preferences;
+    if (prefs == null || versions.isEmpty) return;
+    for (final entry in versions.entries) {
+      await prefs.setString(entry.key, entry.value.toString());
+    }
   }
 
   Map<String, String> _stringStringMap(Object? value) {

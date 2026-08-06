@@ -74,23 +74,8 @@ class _MarketPageState extends ConsumerState<MarketPage> {
               },
               child: ListView(
                 physics: const AlwaysScrollableScrollPhysics(),
-                padding: const EdgeInsets.fromLTRB(16, 4, 16, 28),
+                padding: const EdgeInsets.fromLTRB(16, 12, 16, 28),
                 children: [
-                  LayoutBuilder(
-                    builder: (context, constraints) => AppVisualTitle(
-                      title: '市场',
-                      subtitle: '发现并下载适合你的公开牌组。',
-                      compact: constraints.maxWidth < 380,
-                      actions: [
-                        AppVisualIconButton(
-                          icon: Icons.refresh_rounded,
-                          onPressed: () =>
-                              ref.invalidate(marketSearchProvider(_query)),
-                        ),
-                      ],
-                    ),
-                  ),
-                  const SizedBox(height: 10),
                   _MarketSearchBar(
                     controller: _searchController,
                     query: _query,

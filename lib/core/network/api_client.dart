@@ -15,7 +15,7 @@ class ApiClient {
   }) : _dio = dio ?? Dio() {
     _dio.options = BaseOptions(
       baseUrl: config.baseUrl,
-      connectTimeout: const Duration(seconds: 10),
+      connectTimeout: const Duration(seconds: 8),
       receiveTimeout: const Duration(seconds: 30),
       sendTimeout: const Duration(seconds: 30),
       headers: const {'Accept': 'application/json'},
@@ -23,14 +23,18 @@ class ApiClient {
     _dio.interceptors.add(
       InterceptorsWrapper(
         onRequest: (options, handler) async {
-          final token = await tokenReader();
-          if (token != null && token.isNotEmpty) {
-            options.headers['Authorization'] = 'Bearer $token';
+          final skipAuth = options.extra['skipAuth'] == true;
+          if (!skipAuth) {
+            final token = await tokenReader();
+            if (token != null && token.isNotEmpty) {
+              options.headers['Authorization'] = 'Bearer $token';
+            }
           }
           handler.next(options);
         },
         onError: (error, handler) async {
-          if (error.response?.statusCode == 401) {
+          final skipAuth = error.requestOptions.extra['skipAuth'] == true;
+          if (!skipAuth && error.response?.statusCode == 401) {
             await onUnauthorized?.call();
           }
           handler.next(error);
@@ -62,12 +66,14 @@ class ApiClient {
     Object? data,
     Map<String, dynamic>? queryParameters,
     Options? options,
+    CancelToken? cancelToken,
   }) => _run(
     () => _dio.post(
       path,
       data: data,
       queryParameters: queryParameters,
       options: options,
+      cancelToken: cancelToken,
     ),
   );
 
@@ -78,12 +84,14 @@ class ApiClient {
     String path,
     String savePath, {
     Map<String, dynamic>? queryParameters,
+    Options? options,
     ProgressCallback? onReceiveProgress,
   }) => _run(
     () => _dio.download(
       path,
       savePath,
       queryParameters: queryParameters,
+      options: options,
       onReceiveProgress: onReceiveProgress,
     ),
   );
@@ -98,10 +106,12 @@ class ApiClient {
       }
       return response;
     } on DioException catch (error) {
+      if (CancelToken.isCancel(error)) rethrow;
       if (error.response != null) throw _fromResponse(error.response!);
       throw ApiException(
         statusCode: null,
         message: error.message ?? 'Network request failed',
+        data: error.type,
       );
     } on ApiException {
       rethrow;

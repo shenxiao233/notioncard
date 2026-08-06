@@ -90,19 +90,42 @@ class AppDatabase extends _$AppDatabase {
       );
 
   @override
-  int get schemaVersion => 3;
+  int get schemaVersion => 4;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
-    onCreate: (Migrator m) => m.createAll(),
+    onCreate: (Migrator m) async {
+      await m.createAll();
+      await _createIndexes();
+    },
     onUpgrade: (Migrator m, int from, int to) async {
       if (from < 2) {
         await m.createTable(syncQueue);
       } else if (from < 3) {
         await m.addColumn(syncQueue, syncQueue.objectVersion);
       }
+      if (from < 4) await _createIndexes();
     },
   );
+
+  Future<void> _createIndexes() async {
+    await customStatement(
+      'CREATE INDEX IF NOT EXISTS idx_cards_account_due '
+      'ON cards (account_id, due_at)',
+    );
+    await customStatement(
+      'CREATE INDEX IF NOT EXISTS idx_documents_account_updated '
+      'ON documents (account_id, updated_at)',
+    );
+    await customStatement(
+      'CREATE INDEX IF NOT EXISTS idx_review_events_account_reviewed '
+      'ON review_events (account_id, reviewed_at)',
+    );
+    await customStatement(
+      'CREATE INDEX IF NOT EXISTS idx_sync_queue_account_status_created '
+      'ON sync_queue (account_id, status, created_at)',
+    );
+  }
 
   Future<List<CardModel>> loadCards(String accountId) async {
     final rows =
@@ -127,9 +150,26 @@ class AppDatabase extends _$AppDatabase {
   Future<void> saveCard(CardModel value) =>
       into(cards).insertOnConflictUpdate(_cardToCompanion(value));
 
+  Future<void> saveCards(Iterable<CardModel> values) async {
+    final companions = values.map(_cardToCompanion).toList();
+    if (companions.isEmpty) return;
+    await batch((batch) {
+      batch.insertAllOnConflictUpdate(cards, companions);
+    });
+  }
+
   Future<void> deleteCard(String id, String accountId) => (delete(
     cards,
   )..where((row) => row.id.equals(id) & row.accountId.equals(accountId))).go();
+
+  Future<void> deleteCardsByIds(String accountId, Iterable<String> ids) async {
+    final values = ids.where((id) => id.isNotEmpty).toSet();
+    if (values.isEmpty) return;
+    await (delete(cards)..where(
+          (row) => row.accountId.equals(accountId) & row.id.isIn(values),
+        ))
+        .go();
+  }
 
   Future<void> deleteCardsByFolder(String folder, String accountId) =>
       (delete(cards)..where(
@@ -205,9 +245,40 @@ class AppDatabase extends _$AppDatabase {
         ),
       );
 
+  Future<void> saveDocuments(Iterable<DocumentModel> values) async {
+    final companions = values
+        .map(
+          (value) => DocumentsCompanion.insert(
+            id: value.id,
+            accountId: value.accountId,
+            folder: value.folder,
+            title: value.title,
+            body: value.body,
+            updatedAt: value.updatedAt,
+          ),
+        )
+        .toList();
+    if (companions.isEmpty) return;
+    await batch((batch) {
+      batch.insertAllOnConflictUpdate(documents, companions);
+    });
+  }
+
   Future<void> deleteDocument(String id, String accountId) => (delete(
     documents,
   )..where((row) => row.id.equals(id) & row.accountId.equals(accountId))).go();
+
+  Future<void> deleteDocumentsByIds(
+    String accountId,
+    Iterable<String> ids,
+  ) async {
+    final values = ids.where((id) => id.isNotEmpty).toSet();
+    if (values.isEmpty) return;
+    await (delete(documents)..where(
+          (row) => row.accountId.equals(accountId) & row.id.isIn(values),
+        ))
+        .go();
+  }
 
   Future<void> deleteDocumentsByFolder(String folder, String accountId) =>
       (delete(documents)..where(
@@ -270,8 +341,17 @@ class AppDatabase extends _$AppDatabase {
   }
 
   Future<int> countPendingSync(String accountId) async {
-    final rows = await loadPendingSync(accountId);
-    return rows.length;
+    final row = await customSelect(
+      'SELECT COUNT(*) AS pending_count FROM sync_queue '
+      'WHERE account_id = ? AND status IN (?, ?)',
+      variables: [
+        Variable<String>(accountId),
+        const Variable<String>('pending'),
+        const Variable<String>('failed'),
+      ],
+      readsFrom: {syncQueue},
+    ).getSingle();
+    return row.read<int>('pending_count');
   }
 
   Future<void> enqueueSync(SyncQueueItemModel value) =>
@@ -291,6 +371,31 @@ class AppDatabase extends _$AppDatabase {
           updatedAt: value.updatedAt,
         ),
       );
+
+  Future<void> enqueueSyncItems(Iterable<SyncQueueItemModel> values) async {
+    final companions = values
+        .map(
+          (value) => SyncQueueCompanion.insert(
+            id: value.id,
+            accountId: value.accountId,
+            objectType: value.objectType,
+            objectId: value.objectId,
+            objectVersion: Value(value.objectVersion),
+            operation: value.operation.name,
+            payloadJson: value.payload,
+            status: value.status.name,
+            attempts: Value(value.attempts),
+            lastError: Value(value.lastError),
+            createdAt: value.createdAt,
+            updatedAt: value.updatedAt,
+          ),
+        )
+        .toList();
+    if (companions.isEmpty) return;
+    await batch((batch) {
+      batch.insertAllOnConflictUpdate(syncQueue, companions);
+    });
+  }
 
   Future<void> markSyncFailed(
     String id,
@@ -317,11 +422,55 @@ class AppDatabase extends _$AppDatabase {
         );
   }
 
+  Future<void> markSyncFailedItems(
+    String accountId,
+    Iterable<SyncQueueItemModel> values,
+    String message,
+  ) async {
+    final ids = values
+        .map((value) => value.id)
+        .where((id) => id.isNotEmpty)
+        .toSet();
+    if (ids.isEmpty) return;
+    final rows =
+        await (select(syncQueue)..where(
+              (row) => row.accountId.equals(accountId) & row.id.isIn(ids),
+            ))
+            .get();
+    final now = DateTime.now();
+    await batch((batch) {
+      for (final row in rows) {
+        batch.update(
+          syncQueue,
+          SyncQueueCompanion(
+            status: const Value('failed'),
+            attempts: Value(row.attempts + 1),
+            lastError: Value(message),
+            updatedAt: Value(now),
+          ),
+          where: (value) =>
+              value.accountId.equals(accountId) & value.id.equals(row.id),
+        );
+      }
+    });
+  }
+
   Future<void> markSyncSynced(String id, String accountId) =>
       (update(syncQueue)..where(
             (value) => value.id.equals(id) & value.accountId.equals(accountId),
           ))
           .write(const SyncQueueCompanion(status: Value('synced')));
+
+  Future<void> markSyncItemsSynced(
+    String accountId,
+    Iterable<String> itemIds,
+  ) async {
+    final ids = itemIds.where((id) => id.isNotEmpty).toSet();
+    if (ids.isEmpty) return;
+    await (update(syncQueue)
+          ..where((row) => row.accountId.equals(accountId) & row.id.isIn(ids)))
+        .write(const SyncQueueCompanion(status: Value('synced')));
+  }
 
   Future<void> markPendingSyncObjectsSynced(
     String accountId,

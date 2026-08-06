@@ -37,11 +37,11 @@ class _RegisterPageState extends ConsumerState<RegisterPage> {
     final username = _username.text;
     final password = _password.text;
     final invitationCode = _invitationCode.text;
-    final success = await ref
+    final result = await ref
         .read(authControllerProvider.notifier)
         .register(username, password, invitationCode);
-    if (!success && mounted) {
-      setState(() => _error = '注册失败，请检查账号、密码和邀请码');
+    if (!result.isSuccess && mounted) {
+      setState(() => _error = result.failure?.userMessage ?? '??????????');
     }
   }
 

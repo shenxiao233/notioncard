@@ -29,22 +29,8 @@ class CardsPage extends ConsumerWidget {
             onRefresh: () => _refreshCards(ref),
             child: ListView(
               physics: const AlwaysScrollableScrollPhysics(),
-              padding: const EdgeInsets.fromLTRB(16, 4, 16, 28),
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 28),
               children: [
-                LayoutBuilder(
-                  builder: (context, constraints) => AppVisualTitle(
-                    title: '卡片',
-                    subtitle: '先选择牌组，再浏览其中的复习卡片。',
-                    compact: constraints.maxWidth < 380,
-                    actions: [
-                      AppVisualIconButton(
-                        icon: Icons.sync_rounded,
-                        onPressed: () => _refreshCards(ref),
-                      ),
-                    ],
-                  ),
-                ),
-                const SizedBox(height: 10),
                 _LibrarySummary(cards: values),
                 const SizedBox(height: 24),
                 AppVisualSectionTitle(
@@ -139,16 +125,13 @@ class _DeckCardsPageState extends ConsumerState<DeckCardsPage> {
               physics: const AlwaysScrollableScrollPhysics(),
               padding: const EdgeInsets.fromLTRB(16, 12, 16, 32),
               children: [
-                AppVisualTitle(
-                  title: widget.folder,
-                  subtitle: '牌组详情与复习卡片',
-                  actions: [
-                    AppVisualIconButton(
-                      icon: Icons.delete_outline_rounded,
-                      onPressed: () =>
-                          _confirmDeleteDeck(cards.valueOrNull ?? const []),
-                    ),
-                  ],
+                Align(
+                  alignment: Alignment.centerRight,
+                  child: AppVisualIconButton(
+                    icon: Icons.delete_outline_rounded,
+                    onPressed: () =>
+                        _confirmDeleteDeck(cards.valueOrNull ?? const []),
+                  ),
                 ),
                 const SizedBox(height: 16),
                 _DeckHeader(folder: widget.folder, cards: all),

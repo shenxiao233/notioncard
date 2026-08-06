@@ -52,22 +52,8 @@ class _LibraryPageState extends ConsumerState<LibraryPage> {
               onRefresh: _refreshDocuments,
               child: ListView(
                 physics: const AlwaysScrollableScrollPhysics(),
-                padding: const EdgeInsets.fromLTRB(16, 4, 16, 28),
+                padding: const EdgeInsets.fromLTRB(16, 12, 16, 28),
                 children: [
-                  LayoutBuilder(
-                    builder: (context, constraints) => AppVisualTitle(
-                      title: '学习库',
-                      subtitle: '整理和阅读你的知识文档。',
-                      compact: constraints.maxWidth < 380,
-                      actions: [
-                        AppVisualIconButton(
-                          icon: Icons.sync_rounded,
-                          onPressed: _refreshDocuments,
-                        ),
-                      ],
-                    ),
-                  ),
-                  const SizedBox(height: 10),
                   _LibrarySearchField(
                     controller: _searchController,
                     query: _query,

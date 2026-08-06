@@ -8,6 +8,7 @@ import '../features/auth/login_page.dart';
 import '../features/auth/register_page.dart';
 import '../features/cards/cards_page.dart';
 import '../features/cards/card_detail_page.dart';
+import '../features/cards/cards_market_page.dart';
 import '../features/library/library_page.dart';
 import '../features/library/document_detail_page.dart';
 import '../features/market/deck_detail_page.dart';
@@ -69,6 +70,12 @@ final routerProvider = Provider<GoRouter>((ref) {
                 ),
               ),
             ],
+          ),
+          GoRoute(
+            path: '/cards-market',
+            builder: (context, state) => CardsMarketPage(
+              initialTab: state.uri.queryParameters['tab'] == 'market' ? 1 : 0,
+            ),
           ),
           GoRoute(
             path: '/cards',

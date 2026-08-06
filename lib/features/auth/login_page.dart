@@ -32,11 +32,11 @@ class _LoginPageState extends ConsumerState<LoginPage> {
     setState(() => _error = null);
     final username = _username.text;
     final password = _password.text;
-    final success = await ref
+    final result = await ref
         .read(authControllerProvider.notifier)
         .login(username, password);
-    if (!success && mounted) {
-      setState(() => _error = '用户名或密码不正确');
+    if (!result.isSuccess && mounted) {
+      setState(() => _error = result.failure?.userMessage ?? '??????????');
     }
   }
 

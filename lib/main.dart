@@ -42,6 +42,9 @@ class _KNcardAppState extends ConsumerState<KNcardApp>
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       ref.read(syncControllerProvider.notifier).sync(reason: 'resumed');
+      if (ref.read(currentAccountProvider) != null) {
+        ref.read(appUpdateControllerProvider.notifier).check(silent: true);
+      }
     }
   }
 

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
@@ -13,6 +15,8 @@ import '../core/repositories/auth_repository.dart';
 import '../core/repositories/content_repository.dart';
 import '../core/sync/sync_coordinator.dart';
 import '../core/sync/sync_controller.dart';
+import '../core/update/app_update_controller.dart';
+import '../core/update/app_update_service.dart';
 import '../features/market/market_model.dart';
 import '../features/market/market_repository.dart';
 import '../features/review/review_engine.dart';
@@ -43,6 +47,18 @@ final apiClientProvider = Provider<ApiClient>((ref) {
     onUnauthorized: () async => ref.read(sessionEventsProvider).invalidate(),
   );
 });
+
+final appUpdateServiceProvider = Provider<AppUpdateService>((ref) {
+  return AppUpdateService(
+    apiClient: ref.watch(apiClientProvider),
+    apiConfig: ref.watch(apiConfigProvider),
+  );
+});
+
+final appUpdateControllerProvider =
+    StateNotifierProvider<AppUpdateController, AppUpdateState>((ref) {
+      return AppUpdateController(ref.watch(appUpdateServiceProvider));
+    });
 
 final appDatabaseProvider = Provider<AppDatabase>((ref) {
   final database = AppDatabase();
@@ -77,15 +93,23 @@ final marketRepositoryProvider = Provider<MarketRepository>((ref) {
 });
 
 class AuthController extends StateNotifier<AsyncValue<AccountModel?>> {
-  AuthController(this._repository, SessionEvents events)
-    : super(const AsyncLoading()) {
+  AuthController(
+    this._repository,
+    SessionEvents events, {
+    this.onLogin,
+    this.onSessionInvalidated,
+  }) : super(const AsyncLoading()) {
     events.listen(_invalidateSession);
     _restore();
   }
 
   final AuthRepository _repository;
+  final FutureOr<void> Function()? onLogin;
+  final FutureOr<void> Function()? onSessionInvalidated;
+  bool _authRequestRunning = false;
 
   Future<void> _invalidateSession() async {
+    await onSessionInvalidated?.call();
     await _repository.clearSession();
     state = const AsyncData(null);
   }
@@ -94,59 +118,92 @@ class AuthController extends StateNotifier<AsyncValue<AccountModel?>> {
     state = AsyncData(_repository.currentAccount);
   }
 
-  Future<bool> login(String username, String password) async {
-    state = const AsyncLoading();
-    final account = await _repository.login(username, password);
-    state = AsyncData(account);
-    return account != null;
+  Future<AuthResult> login(String username, String password) async {
+    if (_authRequestRunning) {
+      return const AuthResult.failure(AuthFailure(AuthFailureType.unknown));
+    }
+    _authRequestRunning = true;
+    try {
+      state = const AsyncLoading();
+      final result = await _repository.loginResult(username, password);
+      state = AsyncData(result.account);
+      if (result.isSuccess && onLogin != null) {
+        // Do not make the login button wait for the first data sync.
+        unawaited(Future<void>.sync(() => onLogin!()));
+      }
+      return result;
+    } finally {
+      _authRequestRunning = false;
+    }
   }
 
-  Future<bool> register(
+  Future<AuthResult> register(
     String username,
     String password,
     String invitationCode,
   ) async {
-    state = const AsyncLoading();
-    final account = await _repository.register(
-      username,
-      password,
-      invitationCode,
-    );
-    state = AsyncData(account);
-    return account != null;
+    if (_authRequestRunning) {
+      return const AuthResult.failure(AuthFailure(AuthFailureType.unknown));
+    }
+    _authRequestRunning = true;
+    try {
+      state = const AsyncLoading();
+      final result = await _repository.registerResult(
+        username,
+        password,
+        invitationCode,
+      );
+      state = AsyncData(result.account);
+      if (result.isSuccess && onLogin != null) {
+        unawaited(Future<void>.sync(() => onLogin!()));
+      }
+      return result;
+    } finally {
+      _authRequestRunning = false;
+    }
   }
 
   Future<void> logout() async {
+    await onSessionInvalidated?.call();
     await _repository.logout();
     state = const AsyncData(null);
   }
 }
 
-final authControllerProvider =
+final StateNotifierProvider<AuthController, AsyncValue<AccountModel?>>
+authControllerProvider =
     StateNotifierProvider<AuthController, AsyncValue<AccountModel?>>((ref) {
       return AuthController(
         ref.watch(authRepositoryProvider),
         ref.watch(sessionEventsProvider),
+        onLogin: () =>
+            ref.read(syncControllerProvider.notifier).sync(reason: 'login'),
+        onSessionInvalidated: () =>
+            ref.read(syncControllerProvider.notifier).resetForAccountChange(),
       );
     });
 
-final currentAccountProvider = Provider<AccountModel?>((ref) {
+final Provider<AccountModel?> currentAccountProvider = Provider<AccountModel?>((
+  ref,
+) {
   return ref.watch(authControllerProvider).valueOrNull;
 });
 
-final syncControllerProvider =
-    StateNotifierProvider<SyncController, SyncUiState>((ref) {
-      return SyncController(
-        ref.watch(syncCoordinatorProvider),
-        Connectivity(),
-        () => ref.read(currentAccountProvider),
-        onDataChanged: () {
-          ref.invalidate(cardsProvider);
-          ref.invalidate(documentsProvider);
-          ref.invalidate(reviewEventsProvider);
-        },
-      );
-    });
+final StateNotifierProvider<SyncController, SyncUiState>
+syncControllerProvider = StateNotifierProvider<SyncController, SyncUiState>((
+  ref,
+) {
+  return SyncController(
+    ref.watch(syncCoordinatorProvider),
+    Connectivity(),
+    () => ref.read(currentAccountProvider),
+    onDataChanged: () {
+      ref.invalidate(cardsProvider);
+      ref.invalidate(documentsProvider);
+      ref.invalidate(reviewEventsProvider);
+    },
+  );
+});
 
 class SessionEvents {
   final _listeners = <Future<void> Function()>[];

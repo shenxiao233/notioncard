@@ -7,6 +7,41 @@ import '../models/account_model.dart';
 import '../network/api_client.dart';
 import '../network/api_exception.dart';
 
+enum AuthFailureType {
+  invalidCredentials,
+  network,
+  timeout,
+  server,
+  invalidResponse,
+  unknown,
+}
+
+class AuthFailure {
+  const AuthFailure(this.type, {this.details});
+
+  final AuthFailureType type;
+  final String? details;
+
+  String get userMessage => switch (type) {
+    AuthFailureType.invalidCredentials => '?????????',
+    AuthFailureType.network => '???????????????',
+    AuthFailureType.timeout => '??????????',
+    AuthFailureType.server => '??????????????',
+    AuthFailureType.invalidResponse => '????????????????',
+    AuthFailureType.unknown => '??????????',
+  };
+}
+
+class AuthResult {
+  const AuthResult.success(this.account) : failure = null;
+  const AuthResult.failure(this.failure) : account = null;
+
+  final AccountModel? account;
+  final AuthFailure? failure;
+
+  bool get isSuccess => account != null && failure == null;
+}
+
 class AuthRepository {
   AuthRepository(
     this._preferences, {
@@ -35,58 +70,95 @@ class AuthRepository {
     return null;
   }
 
-  Future<AccountModel?> login(String username, String password) async {
-    final normalizedUsername = username.trim();
-    if (apiClient != null) {
-      try {
-        final response = await apiClient!.post(
-          '/api/v2/auth/login',
-          data: {'username': normalizedUsername, 'password': password},
-        );
-        final body = response.data as Map<String, dynamic>;
-        final token = body['token']?.toString();
-        final user = body['user'];
-        if (token == null || user is! Map<String, dynamic>) return null;
-        await secureStorage.write(key: tokenKey, value: token);
-        final accountJson = Map<String, dynamic>.from(user);
-        await _saveAccount(AccountModel.fromJson(accountJson));
-        return currentAccount;
-      } on ApiException catch (error) {
-        if (!error.isNetworkFailure) return null;
-      }
-    }
-
-    return null;
+  Future<AuthResult> loginResult(String username, String password) {
+    return _authenticate(
+      path: '/api/v2/auth/login',
+      data: {'username': username.trim(), 'password': password},
+      isLogin: true,
+    );
   }
+
+  Future<AuthResult> registerResult(
+    String username,
+    String password,
+    String invitationCode,
+  ) {
+    return _authenticate(
+      path: '/api/v2/auth/register',
+      data: {
+        'username': username.trim(),
+        'password': password,
+        'invitation_code': invitationCode.trim(),
+      },
+      isLogin: false,
+    );
+  }
+
+  // Compatibility helpers for callers that only need the account.
+  Future<AccountModel?> login(String username, String password) async =>
+      (await loginResult(username, password)).account;
 
   Future<AccountModel?> register(
     String username,
     String password,
     String invitationCode,
-  ) async {
-    final normalizedUsername = username.trim();
-    final normalizedInvitationCode = invitationCode.trim();
-    if (apiClient == null) return null;
-    try {
-      final response = await apiClient!.post(
-        '/api/v2/auth/register',
-        data: {
-          'username': normalizedUsername,
-          'password': password,
-          'invitation_code': normalizedInvitationCode,
-        },
-      );
-      final body = response.data as Map<String, dynamic>;
-      final token = body['token']?.toString();
-      final user = body['user'];
-      if (token == null || user is! Map<String, dynamic>) return null;
-      await secureStorage.write(key: tokenKey, value: token);
-      await _saveAccount(AccountModel.fromJson(user));
-      return currentAccount;
-    } on ApiException catch (error) {
-      if (!error.isNetworkFailure) return null;
+  ) async => (await registerResult(username, password, invitationCode)).account;
+
+  Future<AuthResult> _authenticate({
+    required String path,
+    required Map<String, dynamic> data,
+    required bool isLogin,
+  }) async {
+    final client = apiClient;
+    if (client == null) {
+      return const AuthResult.failure(AuthFailure(AuthFailureType.unknown));
     }
-    return null;
+    try {
+      final response = await client.post(path, data: data);
+      final rawBody = response.data;
+      if (rawBody is! Map) {
+        return const AuthResult.failure(
+          AuthFailure(AuthFailureType.invalidResponse),
+        );
+      }
+      final body = Map<String, dynamic>.from(rawBody);
+      final token = body['token']?.toString().trim();
+      final user = body['user'];
+      if (token == null || token.isEmpty || user is! Map) {
+        return const AuthResult.failure(
+          AuthFailure(AuthFailureType.invalidResponse),
+        );
+      }
+      final account = AccountModel.fromJson(Map<String, dynamic>.from(user));
+      if (account.id.isEmpty) {
+        return const AuthResult.failure(
+          AuthFailure(AuthFailureType.invalidResponse),
+        );
+      }
+      await secureStorage.write(key: tokenKey, value: token);
+      await _saveAccount(account);
+      return AuthResult.success(currentAccount ?? account);
+    } on ApiException catch (error) {
+      return AuthResult.failure(_classifyFailure(error, isLogin: isLogin));
+    }
+  }
+
+  AuthFailure _classifyFailure(ApiException error, {required bool isLogin}) {
+    if (error.statusCode == 401 || (isLogin && error.statusCode == 400)) {
+      return const AuthFailure(AuthFailureType.invalidCredentials);
+    }
+    if (error.isNetworkFailure) {
+      final type = error.data?.toString();
+      if (type != null &&
+          (type.contains('Timeout') || type.contains('timeout'))) {
+        return const AuthFailure(AuthFailureType.timeout);
+      }
+      return const AuthFailure(AuthFailureType.network);
+    }
+    if (error.statusCode != null && error.statusCode! >= 500) {
+      return const AuthFailure(AuthFailureType.server);
+    }
+    return AuthFailure(AuthFailureType.server, details: error.message);
   }
 
   Future<void> logout() async {
