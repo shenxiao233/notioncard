@@ -162,6 +162,7 @@ class _DeckCardsPageState extends ConsumerState<DeckCardsPage> {
                     ...filtered.map(
                       (card) => _CardListItem(
                         card: card,
+                        onEdit: () => _showEditCardSheet(card),
                         onDelete: () => _confirmDeleteCard(card),
                       ),
                     ),
@@ -171,13 +172,14 @@ class _DeckCardsPageState extends ConsumerState<DeckCardsPage> {
           },
         ),
       ),
-      floatingActionButton: FloatingActionButton(
+      floatingActionButton: FloatingActionButton.small(
         tooltip: '新增卡片',
         onPressed: _showAddCardSheet,
         backgroundColor: AppVisualColors.green,
         foregroundColor: Colors.white,
         elevation: 5,
-        child: const Icon(Icons.add_rounded, size: 30),
+        shape: const CircleBorder(),
+        child: const Icon(Icons.add_rounded, size: 22),
       ),
       floatingActionButtonLocation: FloatingActionButtonLocation.endFloat,
     );
@@ -357,6 +359,41 @@ class _DeckCardsPageState extends ConsumerState<DeckCardsPage> {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('添加卡片失败：$error')),
+        );
+      }
+    }
+  }
+
+  Future<void> _showEditCardSheet(CardModel card) async {
+    final draft = await showModalBottomSheet<_NewCardDraft>(
+      context: context,
+      isScrollControlled: true,
+      builder: (context) => _AddCardSheet(
+        initialQuestion: card.question,
+        initialNoteContent: card.noteContent,
+        isEditing: true,
+      ),
+    );
+    if (draft == null || !mounted) return;
+
+    try {
+      final updated = card.copyWith(
+        question: draft.question,
+        noteContent: draft.noteContent,
+        updatedAt: DateTime.now(),
+      );
+      await ref.read(contentRepositoryProvider).updateCard(updated);
+      ref.invalidate(cardsProvider);
+      ref.invalidate(pendingSyncProvider);
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('卡片已更新，等待同步。')));
+      }
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('更新卡片失败：$error')),
         );
       }
     }
@@ -616,47 +653,17 @@ class _DeckHeader extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final due = cards.where((card) => card.isDue).length;
-    return Row(
+    return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text.rich(
-                _titleSpan,
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
-              ),
-              const SizedBox(height: 5),
-              Text(
-                '${cards.length} 张卡片',
-                style: const TextStyle(
-                  color: AppVisualColors.muted,
-                  fontSize: 14,
-                  height: 1.25,
-                ),
-              ),
-            ],
-          ),
-        ),
-        const SizedBox(width: 12),
-        Container(
-          margin: const EdgeInsets.only(top: 3),
-          padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 7),
-          decoration: BoxDecoration(
-            color: AppVisualColors.softGreen,
-            borderRadius: BorderRadius.circular(16),
-          ),
-          child: Text(
-            '$due 待复习',
-            style: const TextStyle(
-              color: AppVisualColors.darkGreen,
-              fontSize: 12,
-              fontWeight: FontWeight.w600,
-              height: 1.2,
-            ),
+        Text.rich(_titleSpan, maxLines: 2, overflow: TextOverflow.ellipsis),
+        const SizedBox(height: 5),
+        Text(
+          '${cards.length} 张卡片',
+          style: const TextStyle(
+            color: AppVisualColors.muted,
+            fontSize: 13,
+            height: 1.25,
           ),
         ),
       ],
@@ -670,7 +677,7 @@ class _DeckHeader extends StatelessWidget {
         text: folder,
         style: TextStyle(
           color: AppVisualColors.ink,
-          fontSize: 24,
+          fontSize: 21,
           fontWeight: FontWeight.w700,
           height: 1.15,
         ),
@@ -687,7 +694,7 @@ class _DeckHeader extends StatelessWidget {
       ],
       style: const TextStyle(
         color: AppVisualColors.ink,
-        fontSize: 24,
+        fontSize: 21,
         fontWeight: FontWeight.w700,
         height: 1.15,
       ),
@@ -714,17 +721,16 @@ class _SearchBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Container(
-    height: 58,
-    padding: const EdgeInsets.only(left: 16, right: 6),
+    height: 50,
+    padding: const EdgeInsets.only(left: 14, right: 3),
     decoration: BoxDecoration(
       color: Colors.white,
-      borderRadius: BorderRadius.circular(29),
-      border: Border.all(color: const Color(0xffe8eee9)),
+      borderRadius: BorderRadius.circular(16),
       boxShadow: const [
         BoxShadow(
-          color: Color(0x0b000000),
-          blurRadius: 14,
-          offset: Offset(0, 5),
+          color: Color(0x0a000000),
+          blurRadius: 12,
+          offset: Offset(0, 4),
         ),
       ],
     ),
@@ -741,10 +747,17 @@ class _SearchBar extends StatelessWidget {
             controller: controller,
             onChanged: onChanged,
             textInputAction: TextInputAction.search,
+            textAlignVertical: TextAlignVertical.center,
             cursorColor: AppVisualColors.green,
             decoration: const InputDecoration(
               border: InputBorder.none,
+              enabledBorder: InputBorder.none,
+              focusedBorder: InputBorder.none,
+              disabledBorder: InputBorder.none,
+              errorBorder: InputBorder.none,
+              focusedErrorBorder: InputBorder.none,
               isDense: true,
+              isCollapsed: true,
               contentPadding: EdgeInsets.zero,
               hintText: '搜索题干或标签',
               hintStyle: TextStyle(
@@ -767,6 +780,8 @@ class _SearchBar extends StatelessWidget {
             icon: const Icon(Icons.clear_rounded, size: 19),
             color: AppVisualColors.muted,
             visualDensity: VisualDensity.compact,
+            constraints: const BoxConstraints.tightFor(width: 38, height: 38),
+            padding: EdgeInsets.zero,
           ),
         IconButton(
           tooltip: '筛选和排序',
@@ -777,110 +792,239 @@ class _SearchBar extends StatelessWidget {
           ),
           color: hasFilters ? AppVisualColors.green : AppVisualColors.muted,
           visualDensity: VisualDensity.compact,
+          constraints: const BoxConstraints.tightFor(width: 38, height: 38),
+          padding: EdgeInsets.zero,
         ),
       ],
     ),
   );
 }
 
-class _CardListItem extends StatelessWidget {
-  const _CardListItem({required this.card, required this.onDelete});
+class _CardListItem extends StatefulWidget {
+  const _CardListItem({
+    required this.card,
+    required this.onEdit,
+    required this.onDelete,
+  });
 
   final CardModel card;
+  final VoidCallback onEdit;
   final VoidCallback onDelete;
+
+  @override
+  State<_CardListItem> createState() => _CardListItemState();
+}
+
+class _CardListItemState extends State<_CardListItem> {
+  static const _actionWidth = 144.0;
+  double _offset = 0;
+  bool _dragging = false;
+
+  void _handleDragStart(DragStartDetails details) {
+    setState(() => _dragging = true);
+  }
+
+  void _handleDragUpdate(DragUpdateDetails details) {
+    setState(() {
+      _offset = (_offset + details.delta.dx).clamp(-_actionWidth, 0.0);
+    });
+  }
+
+  void _handleDragEnd(DragEndDetails details) {
+    setState(() {
+      _dragging = false;
+      _offset = _offset < -_actionWidth * 0.45 ? -_actionWidth : 0;
+    });
+  }
+
+  void _close() {
+    if (_offset == 0) return;
+    setState(() => _offset = 0);
+  }
+
+  void _openOrNavigate(BuildContext context) {
+    if (_offset != 0) {
+      _close();
+      return;
+    }
+    context.push('/cards/${widget.card.id}');
+  }
 
   @override
   Widget build(BuildContext context) {
     return Container(
-      margin: const EdgeInsets.only(bottom: 12),
+      margin: const EdgeInsets.only(bottom: 10),
       decoration: BoxDecoration(
         color: Colors.white,
-        borderRadius: BorderRadius.circular(20),
+        borderRadius: BorderRadius.circular(14),
         boxShadow: const [
           BoxShadow(
             color: Color(0x0b000000),
-            blurRadius: 16,
-            offset: Offset(0, 5),
+            blurRadius: 12,
+            offset: Offset(0, 4),
           ),
         ],
       ),
-      child: Material(
-        color: Colors.transparent,
-        child: InkWell(
-          borderRadius: BorderRadius.circular(20),
-          onTap: () => context.push('/cards/${card.id}'),
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(minHeight: 112),
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(16, 14, 8, 14),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(14),
+        child: Stack(
+          children: [
+            Positioned.fill(
               child: Row(
-                crossAxisAlignment: CrossAxisAlignment.center,
+                mainAxisAlignment: MainAxisAlignment.end,
                 children: [
-                  Container(
-                    width: 44,
-                    height: 44,
-                    decoration: const BoxDecoration(
-                      color: AppVisualColors.softGreen,
-                      shape: BoxShape.circle,
-                    ),
-                    child: const Icon(
-                      Icons.lightbulb_outline_rounded,
-                      color: AppVisualColors.green,
-                      size: 22,
-                    ),
-                  ),
-                  const SizedBox(width: 14),
-                  Expanded(
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          card.question,
-                          maxLines: 2,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                            color: AppVisualColors.ink,
-                            fontSize: 16,
-                            fontWeight: FontWeight.w700,
-                            height: 1.3,
-                          ),
-                        ),
-                        const SizedBox(height: 7),
-                        Text(
-                          '${card.isDue ? '待复习' : '未到期'} · ${card.reviews} 次复习',
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                            color: AppVisualColors.muted,
-                            fontSize: 13,
-                            height: 1.25,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  PopupMenuButton<String>(
-                    tooltip: '更多操作',
-                    onSelected: (value) {
-                      if (value == 'delete') onDelete();
+                  _SwipeAction(
+                    width: _actionWidth / 2,
+                    color: AppVisualColors.green,
+                    icon: Icons.edit_rounded,
+                    label: '修改',
+                    onPressed: () {
+                      _close();
+                      widget.onEdit();
                     },
-                    icon: const Icon(
-                      Icons.more_horiz_rounded,
-                      color: AppVisualColors.muted,
-                    ),
-                    itemBuilder: (context) => const [
-                      PopupMenuItem(value: 'delete', child: Text('删除卡片')),
-                    ],
+                  ),
+                  _SwipeAction(
+                    width: _actionWidth / 2,
+                    color: const Color(0xffd94a45),
+                    icon: Icons.delete_outline_rounded,
+                    label: '删除',
+                    onPressed: () {
+                      _close();
+                      widget.onDelete();
+                    },
                   ),
                 ],
               ),
             ),
-          ),
+            AnimatedContainer(
+              duration: _dragging
+                  ? Duration.zero
+                  : const Duration(milliseconds: 180),
+              curve: Curves.easeOut,
+              transform: Matrix4.translationValues(_offset, 0, 0),
+              alignment: Alignment.centerLeft,
+              color: Colors.white,
+              child: Material(
+                color: Colors.transparent,
+                child: InkWell(
+                  onTap: () => _openOrNavigate(context),
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(minHeight: 88),
+                    child: GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onHorizontalDragStart: _handleDragStart,
+                      onHorizontalDragUpdate: _handleDragUpdate,
+                      onHorizontalDragEnd: _handleDragEnd,
+                      child: Padding(
+                        padding: const EdgeInsets.fromLTRB(12, 12, 12, 12),
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.center,
+                          children: [
+                            Container(
+                              width: 38,
+                              height: 38,
+                              decoration: const BoxDecoration(
+                                color: AppVisualColors.softGreen,
+                                shape: BoxShape.circle,
+                              ),
+                              child: const Icon(
+                                Icons.lightbulb_outline_rounded,
+                                color: AppVisualColors.green,
+                                size: 19,
+                              ),
+                            ),
+                            const SizedBox(width: 11),
+                            Expanded(
+                              child: Column(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    widget.card.question,
+                                    maxLines: 2,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(
+                                      color: AppVisualColors.ink,
+                                      fontSize: 14,
+                                      fontWeight: FontWeight.w700,
+                                      height: 1.25,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 5),
+                                  Text(
+                                    '${widget.card.isDue ? '待复习' : '未到期'} · ${widget.card.reviews} 次复习',
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(
+                                      color: AppVisualColors.muted,
+                                      fontSize: 12,
+                                      height: 1.2,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                            const Icon(
+                              Icons.chevron_right_rounded,
+                              color: AppVisualColors.muted,
+                              size: 20,
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ],
         ),
       ),
     );
   }
+}
+
+class _SwipeAction extends StatelessWidget {
+  const _SwipeAction({
+    required this.width,
+    required this.color,
+    required this.icon,
+    required this.label,
+    required this.onPressed,
+  });
+
+  final double width;
+  final Color color;
+  final IconData icon;
+  final String label;
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) => SizedBox(
+    width: width,
+    height: double.infinity,
+    child: Material(
+      color: color,
+      child: InkWell(
+        onTap: onPressed,
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(icon, color: Colors.white, size: 18),
+            const SizedBox(height: 3),
+            Text(
+              label,
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ],
+        ),
+      ),
+    ),
+  );
 }
 
 class _NewCardDraft {
@@ -891,7 +1035,15 @@ class _NewCardDraft {
 }
 
 class _AddCardSheet extends StatefulWidget {
-  const _AddCardSheet();
+  const _AddCardSheet({
+    this.initialQuestion = '',
+    this.initialNoteContent = '',
+    this.isEditing = false,
+  });
+
+  final String initialQuestion;
+  final String initialNoteContent;
+  final bool isEditing;
 
   @override
   State<_AddCardSheet> createState() => _AddCardSheetState();
@@ -901,6 +1053,13 @@ class _AddCardSheetState extends State<_AddCardSheet> {
   final _questionController = TextEditingController();
   final _noteController = TextEditingController();
   String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _questionController.text = widget.initialQuestion;
+    _noteController.text = widget.initialNoteContent;
+  }
 
   @override
   void dispose() {
@@ -937,17 +1096,19 @@ class _AddCardSheetState extends State<_AddCardSheet> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Text(
-                '新增卡片',
-                style: TextStyle(
+              Text(
+                widget.isEditing ? '修改卡片' : '新增卡片',
+                style: const TextStyle(
                   color: AppVisualColors.ink,
                   fontSize: 20,
                   fontWeight: FontWeight.w700,
                 ),
               ),
               const SizedBox(height: 5),
-              const Text(
-                '保存后会加入当前牌组，并在下次同步时上传。',
+              Text(
+                widget.isEditing
+                    ? '修改后会保留复习记录，并在下次同步时上传。'
+                    : '保存后会加入当前牌组，并在下次同步时上传。',
                 style: TextStyle(
                   color: AppVisualColors.muted,
                   fontSize: 13,
@@ -993,8 +1154,11 @@ class _AddCardSheetState extends State<_AddCardSheet> {
                 width: double.infinity,
                 child: FilledButton.icon(
                   onPressed: _submit,
-                  icon: const Icon(Icons.add_rounded, size: 19),
-                  label: const Text('添加卡片'),
+                  icon: Icon(
+                    widget.isEditing ? Icons.check_rounded : Icons.add_rounded,
+                    size: 19,
+                  ),
+                  label: Text(widget.isEditing ? '保存修改' : '添加卡片'),
                 ),
               ),
             ],

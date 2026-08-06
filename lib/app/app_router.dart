@@ -72,10 +72,12 @@ final routerProvider = Provider<GoRouter>((ref) {
             ],
           ),
           GoRoute(
+            path: '/knowledge-base',
+            builder: (context, state) => const KnowledgeBasePage(),
+          ),
+          GoRoute(
             path: '/cards-market',
-            builder: (context, state) => CardsMarketPage(
-              initialTab: state.uri.queryParameters['tab'] == 'market' ? 1 : 0,
-            ),
+            builder: (context, state) => const KnowledgeBasePage(),
           ),
           GoRoute(
             path: '/cards',

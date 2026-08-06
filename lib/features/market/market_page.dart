@@ -89,7 +89,7 @@ class _MarketPageState extends ConsumerState<MarketPage> {
                   ),
                   const SizedBox(height: 16),
                   AppVisualSectionTitle(
-                    title: '公开牌组',
+                    title: '牌组市场',
                     subtitle: _category == null
                         ? '${values.length} 个牌组'
                         : '${filtered.length} 个匹配牌组',
@@ -97,9 +97,9 @@ class _MarketPageState extends ConsumerState<MarketPage> {
                   const SizedBox(height: 10),
                   if (filtered.isEmpty)
                     EmptyState(
-                      title: values.isEmpty ? '暂无公开牌组' : '当前条件没有牌组',
+                      title: values.isEmpty ? '暂无可用牌组' : '当前条件没有牌组',
                       message: values.isEmpty
-                          ? '连接服务器后，公开牌组会出现在这里。'
+                          ? '连接服务器后，可用牌组会出现在这里。'
                           : '尝试清除搜索或调整分类。',
                       icon: Icons.storefront_outlined,
                       action: values.isEmpty || (!_hasFilter && _query.isEmpty)

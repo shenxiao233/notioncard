@@ -109,6 +109,8 @@ class CardModel {
   bool get isDue => !suspended && !dueAt.isAfter(DateTime.now());
 
   CardModel copyWith({
+    String? question,
+    String? noteContent,
     DateTime? dueAt,
     DateTime? updatedAt,
     int? reviews,
@@ -121,10 +123,10 @@ class CardModel {
       accountId: accountId,
       type: type,
       folder: folder,
-      question: question,
+      question: question ?? this.question,
       options: options,
       answer: answer,
-      noteContent: noteContent,
+      noteContent: noteContent ?? this.noteContent,
       explanation: explanation,
       tags: tags,
       dueAt: dueAt ?? this.dueAt,

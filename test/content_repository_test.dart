@@ -124,4 +124,55 @@ void main() {
     expect(payload['question'], card.question);
     expect(payload['folder'], card.folder);
   });
+
+  test('updateCard replaces editable fields and queues a card upsert', () async {
+    final now = DateTime(2026, 8, 1);
+    final card = CardModel(
+      id: 'local-card-2',
+      accountId: 'account-1',
+      type: CardType.note,
+      folder: 'deck',
+      question: 'Original question',
+      options: const {},
+      answer: const [],
+      noteContent: 'Original note',
+      explanation: '',
+      tags: const [],
+      dueAt: now,
+      createdAt: now,
+      updatedAt: now,
+      reviews: 3,
+      mastery: 'familiar',
+      suspended: false,
+      fsrs: FsrsSnapshot(
+        state: FsrsState.review,
+        dueAt: now,
+        stability: 4,
+        difficulty: 4,
+        reps: 3,
+        lapses: 0,
+      ),
+    );
+    await database.saveCard(card);
+
+    final updated = card.copyWith(
+      question: 'Updated question',
+      noteContent: 'Updated note',
+      updatedAt: now.add(const Duration(minutes: 1)),
+    );
+    await ContentRepository(database).updateCard(updated);
+
+    final saved = (await database.loadCards(card.accountId)).single;
+    final queued = (await database.loadPendingSync(card.accountId)).single;
+    final payload = jsonDecode(queued.payload) as Map<String, dynamic>;
+
+    expect(saved.question, 'Updated question');
+    expect(saved.noteContent, 'Updated note');
+    expect(saved.reviews, card.reviews);
+    expect(payload['question'], 'Updated question');
+    expect(payload['noteContent'], 'Updated note');
+    expect(queued.objectType, 'CARD');
+    expect(queued.objectId, card.id);
+    expect(queued.operation, SyncOperation.upsert);
+  });
 }

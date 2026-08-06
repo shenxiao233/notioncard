@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 abstract final class AppTheme {
+  static const _fontFamily = 'NotoSerifSC';
   static const _primary = Color(0xff176b62);
   static const _secondary = Color(0xffb96935);
   static const background = Color(0xfffcfdfb);
@@ -29,6 +30,7 @@ abstract final class AppTheme {
 
     return ThemeData(
       useMaterial3: true,
+      fontFamily: _fontFamily,
       colorScheme: scheme,
       scaffoldBackgroundColor: background,
       visualDensity: VisualDensity.standard,
@@ -39,6 +41,7 @@ abstract final class AppTheme {
         scrolledUnderElevation: 0,
         centerTitle: false,
         titleTextStyle: const TextStyle(
+          fontFamily: _fontFamily,
           color: Color(0xff17211e),
           fontSize: 25,
           fontWeight: FontWeight.w700,
@@ -47,25 +50,48 @@ abstract final class AppTheme {
       ),
       textTheme: const TextTheme(
         headlineSmall: TextStyle(
+          fontFamily: _fontFamily,
           fontSize: 24,
           fontWeight: FontWeight.w700,
           height: 1.2,
         ),
         titleLarge: TextStyle(
+          fontFamily: _fontFamily,
           fontSize: 18,
           fontWeight: FontWeight.w700,
           height: 1.25,
         ),
         titleMedium: TextStyle(
+          fontFamily: _fontFamily,
           fontSize: 16,
           fontWeight: FontWeight.w600,
           height: 1.3,
         ),
-        bodyLarge: TextStyle(fontSize: 16, height: 1.55),
-        bodyMedium: TextStyle(fontSize: 14, height: 1.45),
-        bodySmall: TextStyle(fontSize: 13, height: 1.35),
-        labelLarge: TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
-        labelMedium: TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
+        bodyLarge: TextStyle(
+          fontFamily: _fontFamily,
+          fontSize: 16,
+          height: 1.55,
+        ),
+        bodyMedium: TextStyle(
+          fontFamily: _fontFamily,
+          fontSize: 14,
+          height: 1.45,
+        ),
+        bodySmall: TextStyle(
+          fontFamily: _fontFamily,
+          fontSize: 13,
+          height: 1.35,
+        ),
+        labelLarge: TextStyle(
+          fontFamily: _fontFamily,
+          fontSize: 14,
+          fontWeight: FontWeight.w600,
+        ),
+        labelMedium: TextStyle(
+          fontFamily: _fontFamily,
+          fontSize: 12,
+          fontWeight: FontWeight.w600,
+        ),
       ),
       cardTheme: CardThemeData(
         margin: EdgeInsets.zero,

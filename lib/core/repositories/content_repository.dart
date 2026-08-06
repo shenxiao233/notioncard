@@ -44,6 +44,29 @@ class ContentRepository {
     });
   }
 
+  Future<void> updateCard(CardModel card) async {
+    final now = DateTime.now();
+    await database.transaction(() async {
+      await database.saveCard(card);
+      await database.enqueueSync(
+        SyncQueueItemModel(
+          id: 'card-upsert-${card.id}',
+          accountId: card.accountId,
+          objectType: 'CARD',
+          objectId: card.id,
+          objectVersion: 1,
+          operation: SyncOperation.upsert,
+          payload: jsonEncode(_cardSyncPayload(card)),
+          status: SyncItemStatus.pending,
+          attempts: 0,
+          lastError: null,
+          createdAt: now,
+          updatedAt: now,
+        ),
+      );
+    });
+  }
+
   Future<void> saveReview({
     required CardModel card,
     required ReviewEventModel event,
