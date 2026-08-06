@@ -122,7 +122,12 @@ class _ReviewHomePageState extends ConsumerState<ReviewHomePage> {
               builder: (context, constraints) {
                 final width = constraints.maxWidth;
                 final compact = constraints.maxHeight < 760 || width < 380;
-                return Center(
+                return SingleChildScrollView(
+                  physics: const AlwaysScrollableScrollPhysics(
+                    parent: BouncingScrollPhysics(),
+                  ),
+                  padding: const EdgeInsets.only(bottom: 16),
+                  child: Center(
                   child: ConstrainedBox(
                     constraints: const BoxConstraints(maxWidth: 430),
                     child: Padding(
@@ -181,6 +186,7 @@ class _ReviewHomePageState extends ConsumerState<ReviewHomePage> {
                       ),
                     ),
                   ),
+                ),
                 );
               },
             );

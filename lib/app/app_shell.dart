@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
-import '../core/sync/sync_controller.dart';
 import '../core/update/app_update_controller.dart';
 import '../core/widgets/app_brand.dart';
 import 'app_providers.dart';
@@ -26,17 +25,10 @@ class AppShell extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final location = GoRouterState.of(context).uri.path;
     final isStudyFlow = location == '/review/study';
-    final sync = ref.watch(syncControllerProvider);
     final update = ref.watch(appUpdateControllerProvider);
-    final showSyncBanner =
-        sync.isBusy ||
-        sync.connection == SyncConnectionState.offline ||
-        sync.phase == SyncPhase.failure ||
-        sync.pending > 0;
     return Scaffold(
       body: Column(
         children: [
-          if (showSyncBanner) _SyncStatusBanner(sync: sync),
           if (update.hasUpdate) _AppUpdateBanner(update: update),
           Expanded(child: AppContentFrame(child: child)),
         ],
@@ -146,69 +138,6 @@ class _BottomNavigationBar extends StatelessWidget {
                     shape: BoxShape.circle,
                   ),
                 ),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _SyncStatusBanner extends StatelessWidget {
-  const _SyncStatusBanner({required this.sync});
-
-  final SyncUiState sync;
-
-  @override
-  Widget build(BuildContext context) {
-    final offline = sync.connection == SyncConnectionState.offline;
-    final failure = sync.phase == SyncPhase.failure;
-    final color = offline || failure
-        ? const Color(0xff8a5a00)
-        : const Color(0xff256b47);
-    final label = offline
-        ? '当前离线，数据将在网络恢复后同步'
-        : sync.isBusy
-        ? '正在同步数据'
-        : failure
-        ? '同步失败${sync.pending > 0 ? '，${sync.pending} 项待处理' : ''}'
-        : '同步正常';
-    return Material(
-      color: color.withValues(alpha: 0.09),
-      child: InkWell(
-        onTap: () => context.go('/settings'),
-        child: SafeArea(
-          bottom: false,
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(18, 8, 18, 8),
-            child: Row(
-              children: [
-                Icon(
-                  offline
-                      ? Icons.cloud_off_outlined
-                      : sync.isBusy
-                      ? Icons.sync_rounded
-                      : failure
-                      ? Icons.error_outline_rounded
-                      : Icons.cloud_done_outlined,
-                  size: 18,
-                  color: color,
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Text(
-                    label,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      color: color,
-                      fontSize: 12,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                ),
-                const Icon(Icons.chevron_right_rounded, size: 18),
               ],
             ),
           ),
