@@ -11,19 +11,21 @@ List<CardModel> buildReviewQueue({
   final due = cards.where((card) {
     return !card.suspended &&
         !card.dueAt.isAfter(currentTime) &&
-        (folder == null || card.folder == folder);
+        (folder == null || card.folder.trim() == folder.trim());
   }).toList()..sort(_compareCardOrder);
 
   final queue = <CardModel>[];
   var newCards = 0;
   var scheduledCards = 0;
   for (final card in due) {
-    if (card.fsrs.state == FsrsState.newCard) {
-      if (newCards >= settings.newCardsPerDay) continue;
-      newCards++;
-    } else {
-      if (scheduledCards >= settings.reviewsPerDay) continue;
-      scheduledCards++;
+    if (!settings.autonomousLearning) {
+      if (card.fsrs.state == FsrsState.newCard) {
+        if (newCards >= settings.newCardsPerDay) continue;
+        newCards++;
+      } else {
+        if (scheduledCards >= settings.reviewsPerDay) continue;
+        scheduledCards++;
+      }
     }
     queue.add(card);
   }

@@ -5,6 +5,7 @@ import 'package:intl/intl.dart';
 
 import '../../app/app_providers.dart';
 import '../../core/models/document_model.dart';
+import '../../core/widgets/app_layout.dart';
 import '../../core/widgets/app_visuals.dart';
 import '../../core/widgets/empty_state.dart';
 
@@ -52,7 +53,12 @@ class _LibraryPageState extends ConsumerState<LibraryPage> {
               onRefresh: _refreshDocuments,
               child: ListView(
                 physics: const AlwaysScrollableScrollPhysics(),
-                padding: const EdgeInsets.fromLTRB(16, 12, 16, 28),
+                padding: const EdgeInsets.fromLTRB(
+                  16,
+                  12,
+                  16,
+                  AppLayoutMetrics.bottomNavigationContentPadding + 28,
+                ),
                 children: [
                   _LibrarySearchField(
                     controller: _searchController,

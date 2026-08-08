@@ -68,6 +68,8 @@ class SyncController extends StateNotifier<SyncUiState> {
   DateTime? _lastAutomaticSyncAt;
   CancelToken? _cancelToken;
   Future<void>? _activeSync;
+  bool _activePullRemote = false;
+  Timer? _scheduledSync;
   String? _activeAccountId;
   int? _activeGeneration;
   int _sessionGeneration = 0;
@@ -94,9 +96,11 @@ class SyncController extends StateNotifier<SyncUiState> {
           ? SyncConnectionState.online
           : SyncConnectionState.offline,
       phase: online || state.phase == SyncPhase.syncing
-          ? state.phase
+          ? (online && state.phase == SyncPhase.offline
+                ? SyncPhase.idle
+                : state.phase)
           : SyncPhase.offline,
-      message: online ? null : '?????????????????',
+      message: online ? null : '当前处于离线状态，本地内容仍可使用，网络恢复后会自动同步',
     );
   }
 
@@ -106,30 +110,65 @@ class SyncController extends StateNotifier<SyncUiState> {
   /// Runs one task at a time. A caller in the same account session only waits
   /// for the existing task; a caller after an account reset waits for the old
   /// task to fully exit and then starts a task for the new session.
-  Future<void> sync({String reason = 'manual'}) async {
-    final account = _account();
-    if (account == null) return;
-    final active = _activeSync;
-    if (active != null) {
-      final sameSession =
-          _activeAccountId == account.id &&
-          _activeGeneration == _sessionGeneration;
-      await active;
-      if (sameSession) return;
-      if (identical(_activeSync, active)) {
-        _clearActiveTask(active);
+  Future<void> sync({String reason = 'manual'}) =>
+      _requestSync(reason: reason, pullRemote: true);
+
+  Future<void> pushPending({String reason = 'local-change'}) =>
+      _requestSync(reason: reason, pullRemote: false);
+
+  Future<void> _requestSync({
+    required String reason,
+    required bool pullRemote,
+  }) async {
+    _scheduledSync?.cancel();
+    _scheduledSync = null;
+    for (var pass = 0; pass < 2; pass++) {
+      final account = _account();
+      if (account == null) return;
+      final active = _activeSync;
+      if (active != null) {
+        final sameSession =
+            _activeAccountId == account.id &&
+            _activeGeneration == _sessionGeneration;
+        final activePullRemote = _activePullRemote;
+        await active;
+        if (sameSession) {
+          // A review can be saved while the previous sync is in flight. If
+          // that happened, drain the newly-created queue item once the first
+          // task completes; otherwise preserve the existing single-flight
+          // behavior.
+          if (state.phase != SyncPhase.success) return;
+          final pending = await _coordinator.pendingCount(account.id);
+          final needsPull = pullRemote && !activePullRemote;
+          if (pending == 0 && !needsPull) return;
+          if (identical(_activeSync, active)) _clearActiveTask(active);
+        } else if (identical(_activeSync, active)) {
+          _clearActiveTask(active);
+        }
       }
+      await _startSync(reason, pullRemote: pullRemote);
+      if (!mounted || state.phase != SyncPhase.success) return;
+      final pending = await _coordinator.pendingCount(account.id);
+      if (pending == 0) return;
     }
-    await _startSync(reason);
   }
 
-  Future<void> _startSync(String reason) {
+  void scheduleSync({String reason = 'local-change'}) {
+    _scheduledSync?.cancel();
+    _scheduledSync = Timer(const Duration(milliseconds: 800), () {
+      _scheduledSync = null;
+      unawaited(pushPending(reason: reason));
+    });
+  }
+
+  Future<void> _startSync(String reason, {required bool pullRemote}) {
     final active = _activeSync;
     if (active != null) return active;
 
     late final Future<void> task;
-    task = _runSync(reason);
+    task = _runSync(reason, pullRemote: pullRemote);
     _activeSync = task;
+    _activePullRemote = pullRemote;
     _activeAccountId = _account()?.id;
     _activeGeneration = _sessionGeneration;
     unawaited(
@@ -145,12 +184,13 @@ class SyncController extends StateNotifier<SyncUiState> {
   void _clearActiveTask(Future<void> task) {
     if (identical(_activeSync, task)) {
       _activeSync = null;
+      _activePullRemote = false;
       _activeAccountId = null;
       _activeGeneration = null;
     }
   }
 
-  Future<void> _runSync(String reason) async {
+  Future<void> _runSync(String reason, {required bool pullRemote}) async {
     final account = _account();
     if (account == null) return;
 
@@ -169,22 +209,47 @@ class SyncController extends StateNotifier<SyncUiState> {
     final cancelToken = CancelToken();
     _cancelToken = cancelToken;
     if (mounted) {
-      state = state.copyWith(phase: SyncPhase.syncing, clearMessage: true);
+      state = state.copyWith(
+        phase: SyncPhase.syncing,
+        message: '正在同步本地内容，阅读和复习不会被阻塞',
+      );
     }
 
     try {
-      final report = await _coordinator.sync(
-        account.id,
-        cancelToken: cancelToken,
-      );
-      if (report.networkFailure) {
-        throw const ApiException(statusCode: null, message: '??????????????');
+      final pendingBefore = await _coordinator.pendingCount(account.id);
+      var report = const SyncReport();
+
+      // Flush local changes first. This keeps the user's latest FSRS snapshot
+      // ahead of a pull and lets the server return the current version for
+      // conflict handling.
+      if (pendingBefore > 0) {
+        report = await _coordinator.pushPending(
+          account.id,
+          cancelToken: cancelToken,
+        );
       }
-      await _coordinator.fullSync(
-        account.id,
-        force: _coordinator.needsInitialFullSync(account.id),
-        cancelToken: cancelToken,
-      );
+      if (report.networkFailure) {
+        throw const ApiException(statusCode: null, message: '网络连接不可用');
+      }
+      // Pulling is an explicit phase. Review sessions use pushPending(), so
+      // they never perform a remote pull or merge while the user is studying.
+      if (pullRemote) {
+        await _coordinator.fullSync(
+          account.id,
+          force: _coordinator.needsInitialFullSync(account.id),
+          cancelToken: cancelToken,
+        );
+        final tailReport = await _coordinator.pushPending(
+          account.id,
+          cancelToken: cancelToken,
+        );
+        report = SyncReport(
+          synced: report.synced + tailReport.synced,
+          failed: report.failed + tailReport.failed,
+          conflicts: report.conflicts + tailReport.conflicts,
+          networkFailure: tailReport.networkFailure,
+        );
+      }
       if (!_isCurrent(generation, cancelToken)) return;
 
       final pending = await _coordinator.pendingCount(account.id);
@@ -201,9 +266,7 @@ class SyncController extends StateNotifier<SyncUiState> {
         phase: complete ? SyncPhase.success : SyncPhase.failure,
         pending: pending,
         lastSyncedAt: DateTime.now(),
-        message: complete
-            ? '????'
-            : '???????? $pending ??????? ${report.synced} ??',
+        message: complete ? '同步完成' : '同步部分完成，仍有 $pending 项等待处理',
       );
     } on DioException catch (error) {
       if (CancelToken.isCancel(error) || cancelToken.isCancelled) return;
@@ -216,7 +279,7 @@ class SyncController extends StateNotifier<SyncUiState> {
     } catch (error) {
       if (!_isCurrent(generation, cancelToken)) return;
       _lastAutomaticSyncAt = null;
-      await _showFailure(account.id, generation, '???????$error');
+      await _showFailure(account.id, generation, '同步失败，请稍后重试');
     } finally {
       if (identical(_cancelToken, cancelToken)) _cancelToken = null;
     }
@@ -246,17 +309,20 @@ class SyncController extends StateNotifier<SyncUiState> {
     if (error.type == DioExceptionType.connectionTimeout ||
         error.type == DioExceptionType.receiveTimeout ||
         error.type == DioExceptionType.sendTimeout) {
-      return '????????????';
+      return '连接超时，请检查网络后重试';
     }
     if (error.type == DioExceptionType.connectionError) {
-      return '??????????????';
+      return '无法连接到同步服务器';
     }
-    return '???????${error.message ?? '?????'}';
+    return '同步失败，请稍后重试';
   }
 
   String _apiErrorMessage(ApiException error) {
-    if (error.isNetworkFailure) return '??????????????';
-    return '???????${error.message}';
+    if (error.isNetworkFailure) return '网络连接不可用，请检查网络后重试';
+    if (error.statusCode != null && error.statusCode! >= 500) {
+      return '同步服务器暂时不可用，请稍后重试';
+    }
+    return '同步失败，请稍后重试';
   }
 
   /// Invalidates the current account generation immediately, but keeps the
@@ -264,6 +330,8 @@ class SyncController extends StateNotifier<SyncUiState> {
   Future<void> resetForAccountChange() async {
     _sessionGeneration++;
     _lastAutomaticSyncAt = null;
+    _scheduledSync?.cancel();
+    _scheduledSync = null;
     _cancelToken?.cancel('account changed');
     if (mounted) state = const SyncUiState();
   }
@@ -293,11 +361,12 @@ class SyncController extends StateNotifier<SyncUiState> {
     if (generation != _sessionGeneration || _account()?.id != account.id) {
       return;
     }
-    await sync(reason: 'retry-pending');
+    await pushPending(reason: 'retry-pending');
   }
 
   @override
   void dispose() {
+    _scheduledSync?.cancel();
     _cancelToken?.cancel('controller disposed');
     _connectivitySubscription.cancel();
     super.dispose();

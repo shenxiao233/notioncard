@@ -9,6 +9,7 @@ import '../models/card_model.dart';
 import '../models/document_model.dart';
 import '../network/api_client.dart';
 import '../network/api_exception.dart';
+import 'sync_payload.dart';
 import '../utils/rich_text.dart';
 
 class SyncCoordinator {
@@ -61,98 +62,141 @@ class SyncCoordinator {
     await database.enqueueSyncItems(failedItems);
   }
 
-  Future<SyncReport> sync(String accountId, {CancelToken? cancelToken}) async {
+  Future<SyncReport> sync(String accountId, {CancelToken? cancelToken}) =>
+      pushPending(accountId, cancelToken: cancelToken);
+
+  Future<SyncReport> pushPending(
+    String accountId, {
+    CancelToken? cancelToken,
+  }) async {
     final client = apiClient;
     if (client == null) return const SyncReport();
 
-    final items = await database.loadPendingSync(accountId);
-    final groups = <String, List<SyncQueueItemModel>>{};
-    final legacyItemIds = <String>[];
-    for (final item in items) {
-      if (!_supportedObjectTypes.contains(item.objectType)) {
-        // Older builds queued review events separately. Review state is now
-        // part of the CARD payload, so these legacy entries must not poison a
-        // valid batch with an object type rejected by the server.
-        legacyItemIds.add(item.id);
-        continue;
-      }
-      groups
-          .putIfAbsent(_objectKey(item.objectType, item.objectId), () => [])
-          .add(item);
-    }
-    await database.markSyncItemsSynced(accountId, legacyItemIds);
-    final latestItems = groups.values.map((items) => items.last).toList();
-    final deviceId = latestItems.isEmpty ? null : await _deviceId();
     var synced = 0;
     var failed = 0;
     var conflicts = 0;
     var networkFailure = false;
-    for (var offset = 0; offset < latestItems.length; offset += _batchSize) {
-      final batch = latestItems.skip(offset).take(_batchSize).toList();
-      final batchGroups = <String, List<SyncQueueItemModel>>{
-        for (final item in batch)
-          _objectKey(item.objectType, item.objectId):
-              groups[_objectKey(item.objectType, item.objectId)]!,
-      };
-      try {
-        final response = await client.post(
-          '/api/v2/sync/batch',
-          data: {
-            'requests': [
-              for (final item in batch)
-                {
-                  'objectType': item.objectType,
-                  'objectId': item.objectId,
-                  'objectVersion': _objectVersion(accountId, item),
-                  'operation': item.operation.name,
-                  if (item.operation == SyncOperation.upsert)
-                    'data': _decodePayload(item.payload),
-                  'deviceId': deviceId,
-                },
-            ],
-          },
-          cancelToken: cancelToken,
-        );
-        final body = _stringMap(response.data);
-        final responses = body?['responses'];
-        if (body == null || responses is! List) {
-          throw const ApiException(
-            statusCode: 502,
-            message: 'Invalid sync response',
-          );
+    // A conflict can produce a merged local card that needs one more upload
+    // with the server's current version. Allow that retry in the same sync so
+    // a valid local review does not remain stuck as "waiting to upload".
+    for (var pass = 0; pass < 3; pass++) {
+      final items = await database.loadPendingSync(accountId);
+      if (items.isEmpty) break;
+
+      final groups = <String, List<SyncQueueItemModel>>{};
+      final legacyItemIds = <String>[];
+      for (final item in items) {
+        if (!_supportedObjectTypes.contains(item.objectType)) {
+          // Older builds queued review events separately. Review state is now
+          // part of the CARD payload, so these legacy entries must not poison a
+          // valid batch with an object type rejected by the server.
+          legacyItemIds.add(item.id);
+          continue;
         }
-        final handled = <String>{};
-        final syncedItemIds = <String>[];
-        for (final raw in responses) {
-          final result = _stringMap(raw);
-          if (result == null) continue;
-          final objectType = result['objectType']?.toString();
-          final objectId = result['objectId']?.toString();
-          if (objectType == null || objectId == null) continue;
-          final key = _objectKey(objectType, objectId);
-          final groupedItems = batchGroups[key];
-          if (groupedItems == null) continue;
-          handled.add(key);
-          await _saveServerVersion(
-            accountId,
-            objectType,
-            objectId,
-            _version(result['serverVersion']),
+        groups
+            .putIfAbsent(_objectKey(item.objectType, item.objectId), () => [])
+            .add(item);
+      }
+      await database.markSyncItemsSynced(accountId, legacyItemIds);
+      final latestItems = groups.values.map((items) => items.last).toList();
+      if (latestItems.isEmpty) continue;
+      final deviceId = await _deviceId();
+      var queuedConflictRetry = false;
+
+      for (var offset = 0; offset < latestItems.length; offset += _batchSize) {
+        final batch = latestItems.skip(offset).take(_batchSize).toList();
+        final batchGroups = <String, List<SyncQueueItemModel>>{
+          for (final item in batch)
+            _objectKey(item.objectType, item.objectId):
+                groups[_objectKey(item.objectType, item.objectId)]!,
+        };
+        try {
+          final response = await client.post(
+            '/api/v2/sync/batch',
+            data: {
+              'requests': [
+                for (final item in batch)
+                  {
+                    'objectType': item.objectType,
+                    'objectId': item.objectId,
+                    'objectVersion': _objectVersion(accountId, item),
+                    'operation': item.operation.name,
+                    if (item.operation == SyncOperation.upsert)
+                      'data': _decodePayload(item.payload),
+                    'deviceId': deviceId,
+                  },
+              ],
+            },
+            cancelToken: cancelToken,
           );
-          if (result['conflict'] == true) {
-            conflicts++;
-            if (_isRemoteDeletion(result)) {
-              await _removeRemoteObject(
-                accountId,
-                objectType,
-                objectId,
-                result,
-              );
-            } else {
+          final body = _stringMap(response.data);
+          final responses = body?['responses'];
+          if (body == null || responses is! List) {
+            throw const ApiException(
+              statusCode: 502,
+              message: 'Invalid sync response',
+            );
+          }
+          final handled = <String>{};
+          final syncedItemIds = <String>[];
+          final retryItems = <SyncQueueItemModel>[];
+          for (final raw in responses) {
+            final result = _stringMap(raw);
+            if (result == null) continue;
+            final objectType = result['objectType']
+                ?.toString()
+                .trim()
+                .toUpperCase();
+            final objectId = result['objectId']?.toString().trim();
+            if (objectType == null || objectType.isEmpty || objectId == null) {
+              continue;
+            }
+            final key = _objectKey(objectType, objectId);
+            final groupedItems = batchGroups[key];
+            if (groupedItems == null) continue;
+            handled.add(key);
+            final serverVersion = _version(result['serverVersion']);
+            await _saveServerVersion(
+              accountId,
+              objectType,
+              objectId,
+              serverVersion,
+            );
+            if (result['conflict'] == true) {
+              conflicts++;
+              if (_isRemoteDeletion(result)) {
+                await _removeRemoteObject(
+                  accountId,
+                  objectType,
+                  objectId,
+                  result,
+                );
+              } else if (groupedItems.last.operation == SyncOperation.upsert) {
+                final retry = await _mergeConflict(
+                  accountId,
+                  objectType,
+                  objectId,
+                  result,
+                  localItem: groupedItems.last,
+                  serverVersion: serverVersion,
+                );
+                if (retry != null) retryItems.add(retry);
+              } else {
+                await _applyRemotePayload(
+                  accountId,
+                  objectType,
+                  result['data'],
+                  fallbackId: objectId,
+                );
+              }
+            } else if (groupedItems.last.operation == SyncOperation.upsert) {
+              // Some server versions acknowledge an upload without echoing
+              // the object data. Keep the accepted local snapshot in SQLite
+              // so a pull that raced with this upload cannot roll it back.
               await _applyRemotePayload(
                 accountId,
                 objectType,
-                result['data'],
+                result['data'] ?? groupedItems.last.payload,
                 fallbackId: objectId,
               );
             }
@@ -160,40 +204,40 @@ class SyncCoordinator {
               synced++;
               syncedItemIds.add(item.id);
             }
-          } else {
-            for (final item in groupedItems) {
-              synced++;
-              syncedItemIds.add(item.id);
-            }
           }
+          await database.markSyncItemsSynced(accountId, syncedItemIds);
+          if (retryItems.isNotEmpty) {
+            await database.enqueueSyncItems(retryItems);
+            queuedConflictRetry = true;
+          }
+          final missingItems = <SyncQueueItemModel>[];
+          for (final entry in batchGroups.entries) {
+            if (handled.contains(entry.key)) continue;
+            missingItems.addAll(entry.value);
+          }
+          failed += missingItems.length;
+          await database.markSyncFailedItems(
+            accountId,
+            missingItems,
+            'Server did not return a response for this item',
+          );
+        } on ApiException catch (error) {
+          if (error.isNetworkFailure) {
+            networkFailure = true;
+            break;
+          }
+          final failedItems = batchGroups.values
+              .expand((group) => group)
+              .toList();
+          failed += failedItems.length;
+          await database.markSyncFailedItems(
+            accountId,
+            failedItems,
+            error.message,
+          );
         }
-        await database.markSyncItemsSynced(accountId, syncedItemIds);
-        final missingItems = <SyncQueueItemModel>[];
-        for (final entry in batchGroups.entries) {
-          if (handled.contains(entry.key)) continue;
-          missingItems.addAll(entry.value);
-        }
-        failed += missingItems.length;
-        await database.markSyncFailedItems(
-          accountId,
-          missingItems,
-          'Server did not return a response for this item',
-        );
-      } on ApiException catch (error) {
-        if (error.isNetworkFailure) {
-          networkFailure = true;
-          break;
-        }
-        final failedItems = batchGroups.values
-            .expand((group) => group)
-            .toList();
-        failed += failedItems.length;
-        await database.markSyncFailedItems(
-          accountId,
-          failedItems,
-          error.message,
-        );
       }
+      if (networkFailure || !queuedConflictRetry) break;
     }
     return SyncReport(
       synced: synced,
@@ -233,8 +277,13 @@ class SyncCoordinator {
     var cards = 0;
     var documents = 0;
     var hasRemoteContent = false;
+    final protectedObjectKeys = {
+      for (final item in await database.loadPendingSync(accountId))
+        _objectKey(item.objectType.trim().toUpperCase(), item.objectId),
+    };
     final cardsToSave = <String, CardModel>{};
     final documentsToSave = <String, DocumentModel>{};
+    Map<String, CardModel>? localCardsById;
     Map<String, DocumentModel>? localDocumentsById;
     final serverVersions = <String, int>{};
     final remoteObjects = [
@@ -253,6 +302,12 @@ class SyncCoordinator {
         serverVersions[_serverVersionKey(accountId, objectType, objectId)] =
             serverVersion;
       }
+      // Never let a pull overwrite a local mutation which is still waiting
+      // to be uploaded. A relearn reset is a deliberate local change even if
+      // the server still has a higher review count.
+      if (protectedObjectKeys.contains(_objectKey(objectType, objectId))) {
+        continue;
+      }
       if (_isRemoteDeletion(object)) {
         cardsToSave.remove(objectId);
         documentsToSave.remove(objectId);
@@ -270,7 +325,16 @@ class SyncCoordinator {
             fallbackUpdatedAt: objectUpdatedAt,
           );
           if (card.id.isEmpty) continue;
-          cardsToSave[card.id] = card;
+          if (localCardsById == null) {
+            final localCards = await database.loadCards(accountId);
+            localCardsById = {for (final value in localCards) value.id: value};
+          }
+          final localCard = localCardsById[card.id];
+          final value = localCard == null
+              ? card
+              : _mergeCardProgress(localCard, card);
+          cardsToSave[value.id] = value;
+          localCardsById[value.id] = value;
           cards++;
           hasRemoteContent = true;
         case 'DOCUMENT':
@@ -317,6 +381,7 @@ class SyncCoordinator {
         accountId,
         cards: cards > 0,
         documents: documents > 0,
+        protectedObjectKeys: protectedObjectKeys,
       );
     }
     final nextSync = _syncCursor(body);
@@ -442,17 +507,19 @@ class SyncCoordinator {
     String accountId, {
     required bool cards,
     required bool documents,
+    Set<String> protectedObjectKeys = const {},
   }) async {
     if (cards) {
       final localCards = await database.loadCards(accountId);
       final seedIds = localCards
           .where(
             (card) =>
-                card.id.startsWith('card-flutter-') ||
-                card.id.startsWith('card-sync-') ||
-                card.id.startsWith('card-fsrs-') ||
-                card.id.startsWith('card-note-') ||
-                card.id.startsWith('card-drift-'),
+                !protectedObjectKeys.contains(_objectKey('CARD', card.id)) &&
+                (card.id.startsWith('card-flutter-') ||
+                    card.id.startsWith('card-sync-') ||
+                    card.id.startsWith('card-fsrs-') ||
+                    card.id.startsWith('card-note-') ||
+                    card.id.startsWith('card-drift-')),
           )
           .map((card) => card.id)
           .toSet();
@@ -465,8 +532,11 @@ class SyncCoordinator {
       final seedIds = localDocuments
           .where(
             (document) =>
-                document.id == 'doc-first-phase' ||
-                document.id == 'doc-offline',
+                !protectedObjectKeys.contains(
+                  _objectKey('DOCUMENT', document.id),
+                ) &&
+                (document.id == 'doc-first-phase' ||
+                    document.id == 'doc-offline'),
           )
           .map((document) => document.id)
           .toSet();
@@ -653,6 +723,92 @@ class SyncCoordinator {
     return null;
   }
 
+  Future<SyncQueueItemModel?> _mergeConflict(
+    String accountId,
+    String objectType,
+    String objectId,
+    Map<String, dynamic> result, {
+    required SyncQueueItemModel localItem,
+    required int? serverVersion,
+  }) async {
+    if (objectType != 'CARD') {
+      await _applyRemotePayload(
+        accountId,
+        objectType,
+        result['data'],
+        fallbackId: objectId,
+      );
+      return null;
+    }
+
+    final payload = _payloadMap(result['data']);
+    if (payload == null) return null;
+    final remote = _cardFromPayload(
+      accountId,
+      payload,
+      fallbackId: objectId,
+      fallbackUpdatedAt: result['updatedAt'],
+    );
+    if (remote.id.isEmpty) return null;
+
+    // The full pull may have already refreshed the local row. The queued
+    // payload is the authoritative snapshot of the user's local mutation.
+    final localPayload = _payloadMap(_decodePayload(localItem.payload));
+    final queuedLocal = localPayload == null
+        ? null
+        : _cardFromPayload(accountId, localPayload, fallbackId: objectId);
+    final local = queuedLocal?.id.isNotEmpty == true
+        ? queuedLocal
+        : await database.loadCard(objectId, accountId);
+    if (local == null) {
+      await database.saveCard(remote);
+      return null;
+    }
+
+    final progressReset = localPayload?['progressReset'] == true;
+    final merged = _mergeCardProgress(
+      local,
+      remote,
+      preferLocalProgress: progressReset,
+    );
+    await database.saveCard(merged);
+    if (!progressReset && local.reviews < remote.reviews) return null;
+
+    final now = DateTime.now();
+    return SyncQueueItemModel(
+      id: 'conflict-card-$objectId-${now.microsecondsSinceEpoch}',
+      accountId: accountId,
+      objectType: 'CARD',
+      objectId: objectId,
+      objectVersion: serverVersion ?? 1,
+      operation: SyncOperation.upsert,
+      payload: jsonEncode(
+        cardSyncPayload(merged, progressReset: progressReset),
+      ),
+      status: SyncItemStatus.pending,
+      attempts: 0,
+      lastError: null,
+      createdAt: now,
+      updatedAt: now,
+    );
+  }
+
+  CardModel _mergeCardProgress(
+    CardModel local,
+    CardModel remote, {
+    bool preferLocalProgress = false,
+  }) {
+    if (!preferLocalProgress && local.reviews < remote.reviews) return remote;
+    return remote.copyWith(
+      dueAt: local.dueAt,
+      updatedAt: local.updatedAt,
+      reviews: local.reviews,
+      mastery: local.mastery,
+      suspended: local.suspended,
+      fsrs: local.fsrs,
+    );
+  }
+
   Future<void> _applyRemotePayload(
     String accountId,
     String objectType,
@@ -712,7 +868,10 @@ class SyncCoordinator {
         _serverVersionKey(accountId, item.objectType, item.objectId),
       ),
     );
-    return cached ?? max(1, item.objectVersion);
+    // The fallback must represent the initial server version. Local review
+    // counts and timestamps are not server versions and can make an update
+    // look newer than it really is.
+    return cached ?? 1;
   }
 
   Future<void> _saveServerVersion(

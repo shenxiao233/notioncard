@@ -1,5 +1,3 @@
-import 'dart:convert';
-
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -8,10 +6,11 @@ import 'package:intl/intl.dart';
 
 import '../../app/app_providers.dart';
 import '../../core/models/account_model.dart';
-import '../../core/network/api_config.dart';
+import '../../core/sound/app_sound_settings.dart';
+import '../../core/widgets/app_layout.dart';
 import '../../core/sync/sync_controller.dart';
-import '../../core/update/app_update_controller.dart';
 import '../review/review_settings.dart';
+import 'account_avatar.dart';
 
 abstract final class _ProfileColors {
   static const background = Color(0xfff5f8f5);
@@ -21,8 +20,6 @@ abstract final class _ProfileColors {
   static const darkGreen = Color(0xff187c2d);
   static const softGreen = Color(0xffeff8ef);
   static const line = Color(0xffe3e9e4);
-  static const blue = Color(0xff2699e8);
-  static const softBlue = Color(0xffedf7ff);
   static const amber = Color(0xffc48418);
 }
 
@@ -32,17 +29,6 @@ abstract final class _ProfileTypography {
     fontSize: 22,
     fontWeight: FontWeight.w700,
     height: 1.15,
-  );
-  static const username = TextStyle(
-    color: _ProfileColors.darkGreen,
-    fontSize: 12,
-    fontWeight: FontWeight.w600,
-    height: 1.2,
-  );
-  static const tagline = TextStyle(
-    color: _ProfileColors.muted,
-    fontSize: 12,
-    height: 1.3,
   );
   static const statValue = TextStyle(
     color: _ProfileColors.ink,
@@ -57,14 +43,8 @@ abstract final class _ProfileTypography {
     height: 1.2,
   );
   static const sectionTitle = TextStyle(
-    color: _ProfileColors.ink,
-    fontSize: 16,
-    fontWeight: FontWeight.w700,
-    height: 1.2,
-  );
-  static const sectionHint = TextStyle(
     color: _ProfileColors.muted,
-    fontSize: 11,
+    fontSize: 14,
     fontWeight: FontWeight.w500,
     height: 1.2,
   );
@@ -96,29 +76,6 @@ abstract final class _ProfileTypography {
     fontWeight: FontWeight.w600,
     height: 1.2,
   );
-  static const motivationTitle = TextStyle(
-    color: _ProfileColors.ink,
-    fontSize: 16,
-    fontWeight: FontWeight.w700,
-    height: 1.2,
-  );
-  static const motivationBody = TextStyle(
-    color: _ProfileColors.muted,
-    fontSize: 11,
-    fontWeight: FontWeight.w500,
-    height: 1.25,
-  );
-  static const button = TextStyle(
-    fontSize: 12,
-    fontWeight: FontWeight.w600,
-    height: 1.2,
-  );
-  static const avatarInitial = TextStyle(
-    color: _ProfileColors.darkGreen,
-    fontSize: 22,
-    fontWeight: FontWeight.w800,
-    height: 1,
-  );
 }
 
 ButtonStyle _compactTextButtonStyle() => TextButton.styleFrom(
@@ -138,8 +95,9 @@ class SettingsPage extends ConsumerWidget {
     final cards = ref.watch(cardsProvider).valueOrNull?.length ?? 0;
     final documents = ref.watch(documentsProvider).valueOrNull?.length ?? 0;
     final sync = ref.watch(syncControllerProvider);
+    final pending = ref.watch(pendingSyncProvider).valueOrNull ?? sync.pending;
     final reviewSettings = ref.watch(reviewSettingsProvider);
-    final update = ref.watch(appUpdateControllerProvider);
+    final soundSettings = ref.watch(appSoundSettingsProvider);
 
     return Scaffold(
       backgroundColor: _ProfileColors.background,
@@ -160,7 +118,7 @@ class SettingsPage extends ConsumerWidget {
                   compact ? 16 : 20,
                   6,
                   compact ? 16 : 20,
-                  22,
+                  AppLayoutMetrics.bottomNavigationContentPadding + 22,
                 ),
                 child: Center(
                   child: ConstrainedBox(
@@ -178,30 +136,52 @@ class SettingsPage extends ConsumerWidget {
                         _ProfileStats(
                           documents: documents,
                           cards: cards,
-                          pending: sync.pending,
+                          pending: pending,
                           compact: compact,
                         ),
                         const SizedBox(height: 16),
-                        _ProfileSectionHeader(
-                          title: '复习设置',
-                          accent: _ProfileColors.green,
-                          trailing: compact
-                              ? null
-                              : const _SectionTrailing(label: '管理我的学习计划'),
-                        ),
+                        _ProfileSectionHeader(title: '复习设置'),
                         const SizedBox(height: 8),
                         _SettingsGroup(
                           dividerIndent: 22,
                           children: [
                             _SettingsRow(
-                              title: '每日新卡上限',
-                              subtitle:
-                                  '每天最多加入 ${reviewSettings.newCardsPerDay} 张未学习卡片',
-                              trailing: _ValueTrailing(
-                                value: '${reviewSettings.newCardsPerDay} 张',
+                              title: '自主学习',
+                              subtitle: '不限制每日新词和复习数量',
+                              trailing: Switch(
+                                value: reviewSettings.autonomousLearning,
+                                activeThumbColor: _ProfileColors.green,
+                                onChanged: account == null
+                                    ? null
+                                    : (enabled) => _setAutonomousLearning(
+                                        context,
+                                        ref,
+                                        enabled,
+                                      ),
                               ),
                               enabled: account != null,
                               onTap: account == null
+                                  ? null
+                                  : () => _setAutonomousLearning(
+                                      context,
+                                      ref,
+                                      !reviewSettings.autonomousLearning,
+                                    ),
+                            ),
+                            _SettingsRow(
+                              title: '每日新卡上限',
+                              subtitle: reviewSettings.autonomousLearning
+                                  ? '自主学习已开启，不限制每日新词数量'
+                                  : '每天最多加入 ${reviewSettings.newCardsPerDay} 张未学习卡片',
+                              trailing: _ValueTrailing(
+                                value: reviewSettings.autonomousLearning
+                                    ? '不限制'
+                                    : '${reviewSettings.newCardsPerDay} 张',
+                              ),
+                              enabled: account != null,
+                              onTap:
+                                  account == null ||
+                                      reviewSettings.autonomousLearning
                                   ? null
                                   : () => _editLimit(
                                       context,
@@ -211,13 +191,18 @@ class SettingsPage extends ConsumerWidget {
                             ),
                             _SettingsRow(
                               title: '每日复习上限',
-                              subtitle:
-                                  '每天最多加入 ${reviewSettings.reviewsPerDay} 张到期卡片',
+                              subtitle: reviewSettings.autonomousLearning
+                                  ? '自主学习已开启，不限制每日复习数量'
+                                  : '每天最多加入 ${reviewSettings.reviewsPerDay} 张到期卡片',
                               trailing: _ValueTrailing(
-                                value: '${reviewSettings.reviewsPerDay} 张',
+                                value: reviewSettings.autonomousLearning
+                                    ? '不限制'
+                                    : '${reviewSettings.reviewsPerDay} 张',
                               ),
                               enabled: account != null,
-                              onTap: account == null
+                              onTap:
+                                  account == null ||
+                                      reviewSettings.autonomousLearning
                                   ? null
                                   : () => _editLimit(
                                       context,
@@ -228,50 +213,19 @@ class SettingsPage extends ConsumerWidget {
                           ],
                         ),
                         const SizedBox(height: 16),
-                        _ProfileSectionHeader(
-                          title: '同步',
-                          accent: _ProfileColors.blue,
-                          trailing: compact
-                              ? null
-                              : const _SectionTrailing(label: '数据安全，随时可用'),
-                        ),
+                        _ProfileSectionHeader(title: '同步'),
                         const SizedBox(height: 8),
                         _SyncGroup(
                           sync: sync,
+                          pending: pending,
                           accountExists: account != null,
                           ref: ref,
                         ),
-                        const SizedBox(height: 14),
-                        _MotivationCard(onPressed: () => context.go('/review')),
-                        if (update.status != AppUpdateStatus.idle ||
-                            update.hasUpdate) ...[
-                          const SizedBox(height: 16),
-                          const _ProfileSectionHeader(
-                            title: '应用更新',
-                            accent: _ProfileColors.amber,
-                          ),
-                          const SizedBox(height: 8),
-                          _UpdateGroup(update: update, ref: ref),
-                        ],
                         const SizedBox(height: 16),
-                        const _ProfileSectionHeader(
-                          title: '账户',
-                          accent: _ProfileColors.muted,
-                        ),
+                        const _ProfileSectionHeader(title: '声音设置'),
                         const SizedBox(height: 8),
-                        _SettingsGroup(
-                          children: [
-                            _SettingsRow(
-                              icon: Icons.logout_rounded,
-                              title: '退出登录',
-                              subtitle: '清除当前会话，不删除本地缓存',
-                              enabled: account != null,
-                              onTap: account == null
-                                  ? null
-                                  : () => _confirmLogout(context, ref),
-                            ),
-                          ],
-                        ),
+                        _SoundSettingsGroup(settings: soundSettings, ref: ref),
+                        const SizedBox(height: 22),
                       ],
                     ),
                   ),
@@ -296,32 +250,13 @@ class SettingsPage extends ConsumerWidget {
     ]);
   }
 
-  Future<void> _showAccountActions(BuildContext context, WidgetRef ref) async {
+  void _showAccountActions(BuildContext context, WidgetRef ref) {
     final account = ref.read(currentAccountProvider);
     if (account == null) {
       _showMessage(context, '登录后可以管理账户');
       return;
     }
-    await showModalBottomSheet<void>(
-      context: context,
-      showDragHandle: true,
-      backgroundColor: Colors.white,
-      builder: (sheetContext) => SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(12, 0, 12, 16),
-          child: ListTile(
-            contentPadding: const EdgeInsets.symmetric(horizontal: 8),
-            leading: const Icon(Icons.logout_rounded),
-            title: const Text('退出登录'),
-            subtitle: Text(account.username),
-            onTap: () {
-              Navigator.of(sheetContext).pop();
-              _confirmLogout(context, ref);
-            },
-          ),
-        ),
-      ),
-    );
+    context.push('/settings/preferences');
   }
 
   void _showNotifications(BuildContext context) {
@@ -332,6 +267,22 @@ class SettingsPage extends ConsumerWidget {
     ScaffoldMessenger.of(context)
       ..hideCurrentSnackBar()
       ..showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  Future<void> _setAutonomousLearning(
+    BuildContext context,
+    WidgetRef ref,
+    bool enabled,
+  ) async {
+    try {
+      await ref
+          .read(reviewSettingsProvider.notifier)
+          .setAutonomousLearning(enabled);
+    } catch (_) {
+      if (context.mounted) {
+        _showMessage(context, '保存设置失败，请稍后重试');
+      }
+    }
   }
 
   Future<void> _editLimit(
@@ -364,29 +315,6 @@ class SettingsPage extends ConsumerWidget {
       }
     }
   }
-
-  Future<void> _confirmLogout(BuildContext context, WidgetRef ref) async {
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('退出当前账户？'),
-        content: const Text('退出后仍保留本地缓存，重新登录后可以继续同步。'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(dialogContext).pop(false),
-            child: const Text('取消'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(dialogContext).pop(true),
-            child: const Text('退出登录'),
-          ),
-        ],
-      ),
-    );
-    if (confirmed == true) {
-      await ref.read(authControllerProvider.notifier).logout();
-    }
-  }
 }
 
 class _ProfileHero extends StatelessWidget {
@@ -403,7 +331,6 @@ class _ProfileHero extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final nickname = account?.nickname.trim();
-    final username = account?.username.trim();
     return Column(
       children: [
         Align(
@@ -430,7 +357,7 @@ class _ProfileHero extends StatelessWidget {
         Row(
           crossAxisAlignment: CrossAxisAlignment.center,
           children: [
-            _AccountAvatar(account: account),
+            AccountAvatar(account: account),
             const SizedBox(width: 10),
             Expanded(
               child: Column(
@@ -442,25 +369,6 @@ class _ProfileHero extends StatelessWidget {
                     overflow: TextOverflow.ellipsis,
                     style: _ProfileTypography.name,
                   ),
-                  const SizedBox(height: 4),
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 8,
-                      vertical: 4,
-                    ),
-                    decoration: const BoxDecoration(
-                      color: _ProfileColors.softGreen,
-                      borderRadius: BorderRadius.all(Radius.circular(12)),
-                    ),
-                    child: Text(
-                      username?.isNotEmpty == true ? username! : '未登录',
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: _ProfileTypography.username,
-                    ),
-                  ),
-                  const SizedBox(height: 5),
-                  const Text('专注学习，持续成长', style: _ProfileTypography.tagline),
                 ],
               ),
             ),
@@ -522,74 +430,6 @@ class _ProfileActionButton extends StatelessWidget {
   );
 }
 
-class _AccountAvatar extends StatelessWidget {
-  const _AccountAvatar({required this.account});
-
-  final AccountModel? account;
-
-  @override
-  Widget build(BuildContext context) {
-    final image = _avatarImage(account?.avatar?.trim());
-    return Container(
-      width: 70,
-      height: 70,
-      padding: const EdgeInsets.all(2),
-      decoration: const BoxDecoration(
-        color: Colors.white,
-        shape: BoxShape.circle,
-      ),
-      child: ClipOval(
-        child: image == null
-            ? _fallback()
-            : Image(
-                image: image,
-                fit: BoxFit.cover,
-                errorBuilder: (context, error, stackTrace) => _fallback(),
-              ),
-      ),
-    );
-  }
-
-  Widget _fallback() => Container(
-    color: _ProfileColors.softGreen,
-    alignment: Alignment.center,
-    child: Text(
-      account == null ? '?' : _initial(account!),
-      style: _ProfileTypography.avatarInitial,
-    ),
-  );
-
-  ImageProvider<Object>? _avatarImage(String? source) {
-    if (source == null || source.isEmpty) return null;
-    if (source.startsWith('data:image/')) {
-      final comma = source.indexOf(',');
-      if (comma < 0) return null;
-      try {
-        return MemoryImage(base64Decode(source.substring(comma + 1)));
-      } catch (_) {
-        return null;
-      }
-    }
-    final uri = Uri.tryParse(source);
-    if (uri == null) return null;
-    if (uri.hasScheme && (uri.scheme == 'http' || uri.scheme == 'https')) {
-      return NetworkImage(uri.toString());
-    }
-    final base = Uri.tryParse(ApiConfig.defaultBaseUrl);
-    final resolved = base?.resolve(source);
-    return resolved == null ? null : NetworkImage(resolved.toString());
-  }
-
-  String _initial(AccountModel value) {
-    final name = value.nickname.trim().isNotEmpty
-        ? value.nickname.trim()
-        : value.username.trim();
-    return name.isEmpty
-        ? '?'
-        : String.fromCharCode(name.runes.first).toUpperCase();
-  }
-}
-
 class _ProfileStats extends StatelessWidget {
   const _ProfileStats({
     required this.documents,
@@ -616,7 +456,6 @@ class _ProfileStats extends StatelessWidget {
       children: [
         Expanded(
           child: _ProfileStat(
-            icon: Icons.menu_book_rounded,
             value: documents,
             label: '知识库文档',
             compact: compact,
@@ -624,21 +463,11 @@ class _ProfileStats extends StatelessWidget {
         ),
         const _StatDivider(),
         Expanded(
-          child: _ProfileStat(
-            icon: Icons.style_rounded,
-            value: cards,
-            label: '复习卡片',
-            compact: compact,
-          ),
+          child: _ProfileStat(value: cards, label: '复习卡片', compact: compact),
         ),
         const _StatDivider(),
         Expanded(
-          child: _ProfileStat(
-            icon: Icons.cloud_upload_rounded,
-            value: pending,
-            label: '待同步项目',
-            compact: compact,
-          ),
+          child: _ProfileStat(value: pending, label: '待同步项目', compact: compact),
         ),
       ],
     ),
@@ -655,13 +484,11 @@ class _StatDivider extends StatelessWidget {
 
 class _ProfileStat extends StatelessWidget {
   const _ProfileStat({
-    required this.icon,
     required this.value,
     required this.label,
     required this.compact,
   });
 
-  final IconData icon;
   final int value;
   final String label;
   final bool compact;
@@ -670,15 +497,14 @@ class _ProfileStat extends StatelessWidget {
   Widget build(BuildContext context) => Column(
     mainAxisAlignment: MainAxisAlignment.center,
     children: [
-      Row(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(icon, color: _ProfileColors.green, size: compact ? 17 : 18),
-          const SizedBox(width: 4),
-          Text('$value', style: _ProfileTypography.statValue),
-        ],
+      Text(
+        '$value',
+        style: _ProfileTypography.statValue.copyWith(
+          fontSize: compact ? 22 : 24,
+          color: _ProfileColors.darkGreen,
+        ),
       ),
-      const SizedBox(height: 5),
+      const SizedBox(height: 7),
       Text(
         label,
         maxLines: 1,
@@ -690,60 +516,14 @@ class _ProfileStat extends StatelessWidget {
 }
 
 class _ProfileSectionHeader extends StatelessWidget {
-  const _ProfileSectionHeader({
-    required this.title,
-    required this.accent,
-    this.trailing,
-  });
+  const _ProfileSectionHeader({required this.title});
 
   final String title;
-  final Color accent;
-  final Widget? trailing;
 
   @override
-  Widget build(BuildContext context) => Row(
-    crossAxisAlignment: CrossAxisAlignment.center,
-    children: [
-      Container(
-        width: 4,
-        height: 18,
-        decoration: BoxDecoration(
-          color: accent,
-          borderRadius: BorderRadius.circular(4),
-        ),
-      ),
-      const SizedBox(width: 6),
-      Expanded(child: Text(title, style: _ProfileTypography.sectionTitle)),
-      ?trailing,
-    ],
-  );
-}
-
-class _SectionTrailing extends StatelessWidget {
-  const _SectionTrailing({required this.label});
-
-  final String label;
-
-  @override
-  Widget build(BuildContext context) => Row(
-    mainAxisSize: MainAxisSize.min,
-    children: [
-      ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 180),
-        child: Text(
-          label,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-          style: _ProfileTypography.sectionHint,
-        ),
-      ),
-      const SizedBox(width: 4),
-      const Icon(
-        Icons.chevron_right_rounded,
-        size: 16,
-        color: _ProfileColors.muted,
-      ),
-    ],
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.only(left: 2),
+    child: Text(title, style: _ProfileTypography.sectionTitle),
   );
 }
 
@@ -804,22 +584,16 @@ class _SettingsRow extends StatelessWidget {
   const _SettingsRow({
     required this.title,
     required this.subtitle,
-    this.icon,
     this.trailing,
     this.enabled = true,
     this.onTap,
-    this.iconColor,
-    this.iconBackground,
   });
 
-  final IconData? icon;
   final String title;
   final String subtitle;
   final Widget? trailing;
   final bool enabled;
   final VoidCallback? onTap;
-  final Color? iconColor;
-  final Color? iconBackground;
 
   @override
   Widget build(BuildContext context) {
@@ -829,28 +603,11 @@ class _SettingsRow extends StatelessWidget {
     final subtitleColor = enabled
         ? _ProfileColors.muted
         : _ProfileColors.muted.withValues(alpha: 0.5);
-    final accent = enabled
-        ? iconColor ?? _ProfileColors.green
-        : _ProfileColors.muted.withValues(alpha: 0.45);
     return ListTile(
       enabled: enabled,
       onTap: onTap,
       dense: true,
-      contentPadding: EdgeInsets.symmetric(
-        horizontal: icon == null ? 16 : 12,
-        vertical: icon == null ? 4 : 3,
-      ),
-      leading: icon == null
-          ? null
-          : Container(
-              width: 36,
-              height: 36,
-              decoration: BoxDecoration(
-                color: iconBackground ?? _ProfileColors.softGreen,
-                shape: BoxShape.circle,
-              ),
-              child: Icon(icon, color: accent, size: 19),
-            ),
+      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
       title: Text(
         title,
         maxLines: 1,
@@ -897,11 +654,13 @@ class _StatusBadge extends StatelessWidget {
 class _SyncGroup extends StatelessWidget {
   const _SyncGroup({
     required this.sync,
+    required this.pending,
     required this.accountExists,
     required this.ref,
   });
 
   final SyncUiState sync;
+  final int pending;
   final bool accountExists;
   final WidgetRef ref;
 
@@ -909,9 +668,6 @@ class _SyncGroup extends StatelessWidget {
   Widget build(BuildContext context) {
     final offline = sync.connection == SyncConnectionState.offline;
     final failure = sync.phase == SyncPhase.failure;
-    final statusColor = offline || failure
-        ? _ProfileColors.amber
-        : _ProfileColors.green;
     final statusLabel = offline
         ? '离线'
         : sync.isBusy
@@ -920,32 +676,20 @@ class _SyncGroup extends StatelessWidget {
         ? '需重试'
         : '在线';
     return _SettingsGroup(
-      dividerIndent: 84,
+      dividerIndent: 16,
       children: [
         _SettingsRow(
-          icon: offline
-              ? Icons.cloud_off_outlined
-              : sync.isBusy
-              ? Icons.sync_rounded
-              : Icons.cloud_done_outlined,
-          iconColor: statusColor,
-          iconBackground: _ProfileColors.softBlue,
           title: '连接状态',
-          subtitle: _syncDescription(sync),
+          subtitle: _syncDescription(sync, pending),
           trailing: _StatusBadge(
             label: statusLabel,
             warning: offline || failure,
           ),
         ),
         _SettingsRow(
-          icon: Icons.pending_actions_outlined,
-          iconColor: _ProfileColors.blue,
-          iconBackground: _ProfileColors.softBlue,
           title: '待同步项目',
-          subtitle: sync.pending == 0
-              ? '没有等待处理的本地更改'
-              : '${sync.pending} 个项目等待处理',
-          trailing: sync.pending > 0
+          subtitle: pending == 0 ? '没有等待处理的本地更改' : '$pending 个项目等待处理',
+          trailing: pending > 0
               ? TextButton(
                   style: _compactTextButtonStyle(),
                   onPressed: !accountExists || sync.isBusy
@@ -958,16 +702,15 @@ class _SyncGroup extends StatelessWidget {
               : const _ValueTrailing(value: '0 项'),
         ),
         _SettingsRow(
-          icon: Icons.history_rounded,
-          iconColor: _ProfileColors.blue,
-          iconBackground: _ProfileColors.softBlue,
           title: '最近同步',
           subtitle: sync.lastSyncedAt == null
               ? '尚未完成同步'
               : _relativeTime(sync.lastSyncedAt!),
           trailing: _TextChevron(
-            label: '查看历史',
-            onTap: () => context.push('/review/history'),
+            label: '立即同步',
+            onTap: !accountExists || sync.isBusy
+                ? null
+                : () => ref.read(syncControllerProvider.notifier).sync(),
           ),
           onTap: !accountExists || sync.isBusy
               ? null
@@ -977,7 +720,7 @@ class _SyncGroup extends StatelessWidget {
     );
   }
 
-  String _syncDescription(SyncUiState sync) {
+  String _syncDescription(SyncUiState sync, int pending) {
     if (sync.phase == SyncPhase.syncing) {
       return '正在同步本地内容，阅读和复习不会被阻塞';
     }
@@ -987,7 +730,7 @@ class _SyncGroup extends StatelessWidget {
     if (sync.phase == SyncPhase.failure) {
       return '同步没有完成，可以手动重试';
     }
-    if (sync.pending > 0) {
+    if (pending > 0) {
       return '有本地复习结果等待上传';
     }
     return '同步状态正常';
@@ -1001,6 +744,51 @@ class _SyncGroup extends StatelessWidget {
     if (difference.inDays < 7) return '${difference.inDays} 天前';
     return DateFormat('yyyy-MM-dd HH:mm').format(value.toLocal());
   }
+}
+
+class _SoundSettingsGroup extends StatelessWidget {
+  const _SoundSettingsGroup({required this.settings, required this.ref});
+
+  final AppSoundSettings settings;
+  final WidgetRef ref;
+
+  @override
+  Widget build(BuildContext context) => _SettingsGroup(
+    children: [
+      _SettingsRow(
+        title: '界面音效',
+        subtitle: '复习、完成和同步时播放轻提示音',
+        trailing: Switch(
+          value: settings.enabled,
+          activeThumbColor: _ProfileColors.green,
+          onChanged: (value) =>
+              ref.read(appSoundSettingsProvider.notifier).setEnabled(value),
+        ),
+        onTap: () => ref
+            .read(appSoundSettingsProvider.notifier)
+            .setEnabled(!settings.enabled),
+      ),
+      _SettingsRow(
+        title: '复习反馈音',
+        subtitle: settings.enabled ? '答题后播放轻柔提示音' : '开启界面音效后可用',
+        enabled: settings.enabled,
+        trailing: Switch(
+          value: settings.reviewFeedbackEnabled,
+          activeThumbColor: _ProfileColors.green,
+          onChanged: settings.enabled
+              ? (value) => ref
+                    .read(appSoundSettingsProvider.notifier)
+                    .setReviewFeedbackEnabled(value)
+              : null,
+        ),
+        onTap: settings.enabled
+            ? () => ref
+                  .read(appSoundSettingsProvider.notifier)
+                  .setReviewFeedbackEnabled(!settings.reviewFeedbackEnabled)
+            : null,
+      ),
+    ],
+  );
 }
 
 class _TextChevron extends StatelessWidget {
@@ -1033,167 +821,6 @@ class _TextChevron extends StatelessWidget {
               child: content,
             ),
           );
-  }
-}
-
-class _MotivationCard extends StatelessWidget {
-  const _MotivationCard({required this.onPressed});
-
-  final VoidCallback onPressed;
-
-  @override
-  Widget build(BuildContext context) => ClipRRect(
-    borderRadius: BorderRadius.circular(12),
-    child: SizedBox(
-      height: 112,
-      child: Stack(
-        fit: StackFit.expand,
-        children: [
-          Image.asset(
-            'assets/review_motivation.jpg',
-            fit: BoxFit.cover,
-            alignment: Alignment.center,
-          ),
-          const ColoredBox(color: Color(0x38f7fff0)),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(14, 12, 14, 10),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text(
-                  '学习是一场马拉松',
-                  style: _ProfileTypography.motivationTitle,
-                ),
-                const SizedBox(height: 4),
-                const Text(
-                  '每天进步一点点，未来的你会感谢现在的坚持',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: _ProfileTypography.motivationBody,
-                ),
-                const Spacer(),
-                FilledButton(
-                  onPressed: onPressed,
-                  style: FilledButton.styleFrom(
-                    backgroundColor: _ProfileColors.green,
-                    foregroundColor: Colors.white,
-                    minimumSize: const Size(96, 32),
-                    padding: const EdgeInsets.symmetric(horizontal: 16),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(16),
-                    ),
-                    textStyle: _ProfileTypography.button,
-                  ),
-                  child: const Text('继续学习'),
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
-    ),
-  );
-}
-
-class _UpdateGroup extends StatelessWidget {
-  const _UpdateGroup({required this.update, required this.ref});
-
-  final AppUpdateState update;
-  final WidgetRef ref;
-
-  @override
-  Widget build(BuildContext context) {
-    final manifest = update.manifest;
-    final busy =
-        update.status == AppUpdateStatus.checking ||
-        update.status == AppUpdateStatus.downloading ||
-        update.status == AppUpdateStatus.installing;
-    final availableManifest = update.hasUpdate ? manifest : null;
-    final hasUpdate = availableManifest != null;
-    final title = switch (update.status) {
-      AppUpdateStatus.checking => '正在检查更新',
-      AppUpdateStatus.downloading => '正在下载更新',
-      AppUpdateStatus.installing => '正在准备安装',
-      AppUpdateStatus.installed => '安装器已打开',
-      AppUpdateStatus.error => '更新检查失败',
-      AppUpdateStatus.upToDate => '已经是最新版本',
-      AppUpdateStatus.available => '发现新版本',
-      AppUpdateStatus.idle => '检查应用更新',
-    };
-    final subtitle = switch (update.status) {
-      AppUpdateStatus.checking => '正在从服务器获取最新版本信息',
-      AppUpdateStatus.downloading =>
-        '已下载 ${(update.progress * 100).clamp(0, 100).toStringAsFixed(0)}%',
-      AppUpdateStatus.installing => update.message ?? '请稍候',
-      AppUpdateStatus.installed => update.message ?? '请完成系统安装',
-      AppUpdateStatus.error => update.message ?? '网络或更新包校验失败',
-      AppUpdateStatus.upToDate => '当前没有可用更新',
-      AppUpdateStatus.available =>
-        'v${manifest?.versionName ?? ''} · ${manifest?.mandatory == true ? '必须更新' : '可选更新'}',
-      AppUpdateStatus.idle => '检查服务器是否有新的应用版本',
-    };
-    return _SettingsGroup(
-      children: [
-        _SettingsRow(
-          icon: hasUpdate
-              ? Icons.new_releases_outlined
-              : Icons.system_update_alt_rounded,
-          title: title,
-          subtitle: subtitle,
-          trailing: hasUpdate
-              ? TextButton(
-                  style: _compactTextButtonStyle(),
-                  onPressed: busy || !availableManifest.canDownload
-                      ? null
-                      : () => ref
-                            .read(appUpdateControllerProvider.notifier)
-                            .downloadAndInstall(),
-                  child: Text(
-                    update.status == AppUpdateStatus.error
-                        ? '重试下载'
-                        : availableManifest.mandatory
-                        ? '立即更新'
-                        : '下载更新',
-                  ),
-                )
-              : TextButton(
-                  style: _compactTextButtonStyle(),
-                  onPressed: busy
-                      ? null
-                      : () => ref
-                            .read(appUpdateControllerProvider.notifier)
-                            .check(),
-                  child: Text(busy ? '处理中' : '检查更新'),
-                ),
-        ),
-        if (update.errorCode == 'install_permission_required')
-          _SettingsRow(
-            icon: Icons.security_outlined,
-            title: '需要允许安装未知应用',
-            subtitle: '开启权限后，才能安装从服务器下载的 APK',
-            trailing: TextButton(
-              style: _compactTextButtonStyle(),
-              onPressed: () => ref
-                  .read(appUpdateControllerProvider.notifier)
-                  .openInstallPermissionSettings(),
-              child: const Text('去开启'),
-            ),
-          ),
-        if (availableManifest != null &&
-            availableManifest.notes.trim().isNotEmpty)
-          _SettingsRow(
-            icon: Icons.notes_outlined,
-            title: '更新说明',
-            subtitle: availableManifest.notes.trim(),
-          ),
-        if (hasUpdate && !availableManifest.canDownload)
-          const _SettingsRow(
-            icon: Icons.verified_user_outlined,
-            title: '暂不可下载此更新',
-            subtitle: '服务端必须提供有效的 APK 地址和 SHA-256 校验值',
-          ),
-      ],
-    );
   }
 }
 

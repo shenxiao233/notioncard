@@ -10,6 +10,7 @@ import 'package:kncard_app/core/models/document_model.dart';
 import 'package:kncard_app/core/network/api_client.dart';
 import 'package:kncard_app/core/network/api_config.dart';
 import 'package:kncard_app/core/sync/sync_coordinator.dart';
+import 'package:kncard_app/core/sync/sync_payload.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
@@ -101,6 +102,205 @@ void main() {
     expect(report.synced, 1);
     expect(report.failed, 0);
   });
+
+  test(
+    'pushPending only uploads local changes without a pull request',
+    () async {
+      final adapter = _QueueAdapter([
+        _FakeResponse.json({
+          'responses': [
+            {
+              'objectType': 'CARD',
+              'objectId': 'card-1',
+              'serverVersion': 2,
+              'conflict': false,
+            },
+          ],
+        }),
+      ]);
+      final coordinator = _buildCoordinator(database, preferences, adapter);
+      await database.enqueueSync(
+        _buildQueueItem('queue-1', DateTime(2026, 8, 2)),
+      );
+
+      final report = await coordinator.pushPending('account-1');
+
+      expect(report.failed, 0);
+      expect(adapter.requests, hasLength(1));
+      expect(adapter.requests.single.path, '/api/v2/sync/batch');
+    },
+  );
+
+  test(
+    'preserves local review progress and retries a stale card conflict',
+    () async {
+      final base = _buildCard('card-1', folder: 'deck-1');
+      final local = base.copyWith(
+        dueAt: DateTime(2026, 8, 4),
+        updatedAt: DateTime(2026, 8, 4),
+        reviews: 1,
+        mastery: 'familiar',
+        fsrs: FsrsSnapshot(
+          state: FsrsState.review,
+          dueAt: DateTime(2026, 8, 4),
+          stability: 3,
+          difficulty: 4,
+          reps: 1,
+          lapses: 0,
+        ),
+      );
+      await database.saveCard(local);
+      await database.enqueueSync(
+        SyncQueueItemModel(
+          id: 'review-card-1-1',
+          accountId: local.accountId,
+          objectType: 'CARD',
+          objectId: local.id,
+          objectVersion: 1,
+          operation: SyncOperation.upsert,
+          payload: jsonEncode(cardSyncPayload(local)),
+          status: SyncItemStatus.pending,
+          attempts: 0,
+          lastError: null,
+          createdAt: DateTime(2026, 8, 4),
+          updatedAt: DateTime(2026, 8, 4),
+        ),
+      );
+
+      final remote = cardSyncPayload(base)..['question'] = 'server question';
+      final adapter = _QueueAdapter([
+        _FakeResponse.json({
+          'responses': [
+            {
+              'objectType': 'CARD',
+              'objectId': 'card-1',
+              'serverVersion': 5,
+              'data': remote,
+              'conflict': true,
+              'resolution': 'SERVER_WINS',
+            },
+          ],
+        }),
+        _FakeResponse.json({
+          'responses': [
+            {
+              'objectType': 'CARD',
+              'objectId': 'card-1',
+              'serverVersion': 6,
+              'conflict': false,
+            },
+          ],
+        }),
+      ]);
+      final coordinator = _buildCoordinator(database, preferences, adapter);
+
+      final report = await coordinator.sync('account-1');
+
+      expect(report.failed, 0);
+      expect(report.conflicts, 1);
+      expect(adapter.requests, hasLength(2));
+      final first =
+          ((adapter.requests[0].data as Map)['requests'] as List).single as Map;
+      final retry =
+          ((adapter.requests[1].data as Map)['requests'] as List).single as Map;
+      expect(first['objectVersion'], 1);
+      expect(retry['objectVersion'], 5);
+      expect((retry['data'] as Map)['reviews'], 1);
+      expect((await database.loadPendingSync('account-1')), isEmpty);
+      final saved = (await database.loadCards('account-1')).single;
+      expect(saved.question, 'server question');
+      expect(saved.reviews, 1);
+      expect(saved.fsrs.state, FsrsState.review);
+    },
+  );
+
+  test(
+    'protects a local relearn reset during pull and conflict retry',
+    () async {
+      final now = DateTime(2026, 8, 4);
+      final reset = _buildCard('card-1', folder: 'deck-1');
+      await database.saveCard(reset);
+      await database.enqueueSync(
+        SyncQueueItemModel(
+          id: 'card-upsert-card-1',
+          accountId: reset.accountId,
+          objectType: 'CARD',
+          objectId: reset.id,
+          objectVersion: 1,
+          operation: SyncOperation.upsert,
+          payload: jsonEncode(cardSyncPayload(reset, progressReset: true)),
+          status: SyncItemStatus.pending,
+          attempts: 0,
+          lastError: null,
+          createdAt: now,
+          updatedAt: now,
+        ),
+      );
+
+      final remote = reset.copyWith(
+        dueAt: now.add(const Duration(days: 3)),
+        updatedAt: now.add(const Duration(days: 3)),
+        reviews: 5,
+        mastery: 'familiar',
+        fsrs: FsrsSnapshot(
+          state: FsrsState.review,
+          dueAt: now.add(const Duration(days: 3)),
+          stability: 12,
+          difficulty: 4,
+          reps: 5,
+          lapses: 1,
+        ),
+      );
+      final remotePayload = cardSyncPayload(remote);
+      final adapter = _QueueAdapter([
+        _FakeResponse.json({
+          'objects': [
+            {
+              'objectType': 'CARD',
+              'objectId': 'card-1',
+              'objectVersion': 9,
+              'data': remotePayload,
+            },
+          ],
+        }),
+        _FakeResponse.json({
+          'responses': [
+            {
+              'objectType': 'CARD',
+              'objectId': 'card-1',
+              'serverVersion': 9,
+              'data': remotePayload,
+              'conflict': true,
+            },
+          ],
+        }),
+        _FakeResponse.json({
+          'responses': [
+            {
+              'objectType': 'CARD',
+              'objectId': 'card-1',
+              'serverVersion': 10,
+              'conflict': false,
+            },
+          ],
+        }),
+      ]);
+      final coordinator = _buildCoordinator(database, preferences, adapter);
+
+      await coordinator.fullSync('account-1', force: true);
+      expect((await database.loadCards('account-1')).single.reviews, 0);
+
+      final report = await coordinator.sync('account-1');
+      final saved = (await database.loadCards('account-1')).single;
+
+      expect(report.failed, 0);
+      expect(report.conflicts, 1);
+      expect(adapter.requests, hasLength(3));
+      expect(saved.reviews, 0);
+      expect(saved.fsrs.state, FsrsState.newCard);
+      expect(await database.loadPendingSync('account-1'), isEmpty);
+    },
+  );
 
   test('uses the saved cursor for subsequent incremental pulls', () async {
     final adapter = _QueueAdapter([
@@ -238,36 +438,39 @@ void main() {
     expect(await database.loadCards('account-1'), isEmpty);
   });
 
-  test('removes a stale local card when push conflicts with a tombstone', () async {
-    await database.saveCard(_buildCard('card-1', folder: 'deck-1'));
-    await database.enqueueSync(
-      _buildQueueItem('queue-delete-conflict', DateTime(2026, 8, 2)),
-    );
-    final adapter = _QueueAdapter([
-      _FakeResponse.json({
-        'responses': [
-          {
-            'objectType': 'CARD',
-            'objectId': 'card-1',
-            'serverVersion': 5,
-            'data': null,
-            'metadata': {'deleted': true},
-            'deleted': true,
-            'conflict': true,
-            'resolution': 'SERVER_WINS',
-          },
-        ],
-      }),
-    ]);
-    final coordinator = _buildCoordinator(database, preferences, adapter);
+  test(
+    'removes a stale local card when push conflicts with a tombstone',
+    () async {
+      await database.saveCard(_buildCard('card-1', folder: 'deck-1'));
+      await database.enqueueSync(
+        _buildQueueItem('queue-delete-conflict', DateTime(2026, 8, 2)),
+      );
+      final adapter = _QueueAdapter([
+        _FakeResponse.json({
+          'responses': [
+            {
+              'objectType': 'CARD',
+              'objectId': 'card-1',
+              'serverVersion': 5,
+              'data': null,
+              'metadata': {'deleted': true},
+              'deleted': true,
+              'conflict': true,
+              'resolution': 'SERVER_WINS',
+            },
+          ],
+        }),
+      ]);
+      final coordinator = _buildCoordinator(database, preferences, adapter);
 
-    final report = await coordinator.sync('account-1');
+      final report = await coordinator.sync('account-1');
 
-    expect(report.synced, 1);
-    expect(report.conflicts, 1);
-    expect(await database.loadCards('account-1'), isEmpty);
-    expect(await database.loadPendingSync('account-1'), isEmpty);
-  });
+      expect(report.synced, 1);
+      expect(report.conflicts, 1);
+      expect(await database.loadCards('account-1'), isEmpty);
+      expect(await database.loadPendingSync('account-1'), isEmpty);
+    },
+  );
 
   test('removes all local content in a deleted deck', () async {
     await database.saveCard(_buildCard('card-1', folder: 'deck-1'));

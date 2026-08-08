@@ -136,6 +136,16 @@ class AppDatabase extends _$AppDatabase {
     return rows.map(_cardFromRow).toList();
   }
 
+  Future<CardModel?> loadCard(String id, String accountId) async {
+    final row =
+        await (select(cards)..where(
+              (value) =>
+                  value.id.equals(id) & value.accountId.equals(accountId),
+            ))
+            .getSingleOrNull();
+    return row == null ? null : _cardFromRow(row);
+  }
+
   Future<void> replaceCards(String accountId, List<CardModel> values) async {
     await transaction(() async {
       await (delete(
@@ -184,6 +194,18 @@ class AppDatabase extends _$AppDatabase {
                 row.cardId.equals(cardId) & row.accountId.equals(accountId),
           ))
           .go();
+
+  Future<void> deleteReviewEventsByCards(
+    String accountId,
+    Iterable<String> cardIds,
+  ) async {
+    final ids = cardIds.where((id) => id.isNotEmpty).toSet();
+    if (ids.isEmpty) return;
+    await (delete(reviewEvents)..where(
+          (row) => row.accountId.equals(accountId) & row.cardId.isIn(ids),
+        ))
+        .go();
+  }
 
   Future<List<DocumentModel>> loadDocuments(String accountId) async {
     final rows =
@@ -338,6 +360,27 @@ class AppDatabase extends _$AppDatabase {
               ..orderBy([(row) => OrderingTerm(expression: row.createdAt)]))
             .get();
     return rows.map(_syncFromRow).toList();
+  }
+
+  Future<SyncQueueItemModel?> loadPendingSyncItem(
+    String accountId, {
+    required String objectType,
+    required String objectId,
+  }) async {
+    final row =
+        await (select(syncQueue)
+              ..where(
+                (value) =>
+                    value.accountId.equals(accountId) &
+                    value.objectType.equals(objectType) &
+                    value.objectId.equals(objectId) &
+                    (value.status.equals('pending') |
+                        value.status.equals('failed')),
+              )
+              ..orderBy([(value) => OrderingTerm.desc(value.updatedAt)])
+              ..limit(1))
+            .getSingleOrNull();
+    return row == null ? null : _syncFromRow(row);
   }
 
   Future<int> countPendingSync(String accountId) async {

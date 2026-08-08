@@ -8,6 +8,7 @@ import 'package:go_router/go_router.dart';
 import '../../app/app_providers.dart';
 import '../../core/models/account_model.dart';
 import '../../core/models/card_model.dart';
+import '../../core/widgets/app_layout.dart';
 import 'review_queue.dart';
 import 'review_settings.dart';
 import 'review_session.dart';
@@ -18,7 +19,7 @@ abstract final class _ReviewColors {
   static const green = Color(0xff159515);
   static const darkGreen = Color(0xff087408);
   static const softGreen = Color(0xffeef8ec);
-  static const paleGreen = Color(0xfff7fbf5);
+  static const cardBackground = Colors.white;
   static const line = Color(0xffdfe4df);
 }
 
@@ -66,15 +67,16 @@ class _ReviewHomePageState extends ConsumerState<ReviewHomePage> {
             final selectedCards = selectedFolder == null
                 ? const <CardModel>[]
                 : values
-                      .where((card) => card.folder == selectedFolder)
+                      .where(
+                        (card) => _folderKey(card.folder) == selectedFolder,
+                      )
                       .toList();
             final due = buildReviewQueue(
               cards: selectedCards,
               settings: reviewSettings,
-              folder: selectedFolder,
             );
             final recent = (events.valueOrNull ?? const <ReviewEventModel>[])
-                .where((event) => event.folder == selectedFolder)
+                .where((event) => _folderKey(event.folder) == selectedFolder)
                 .toList();
             final account = ref.watch(currentAccountProvider);
             final session = account == null || selectedFolder == null
@@ -89,16 +91,25 @@ class _ReviewHomePageState extends ConsumerState<ReviewHomePage> {
                 ? const <String>[]
                 : session.queueIds
                       .where(cardsById.containsKey)
-                      .where((id) => cardsById[id]!.folder == selectedFolder)
+                      .where(
+                        (id) =>
+                            _folderKey(cardsById[id]!.folder) == selectedFolder,
+                      )
                       .toList();
-            final todayTotal = session == null
-                ? due.length
-                : sessionQueueIds.length;
-            final completedToday = session == null
-                ? 0
-                : session.completedIds
-                      .where(sessionQueueIds.toSet().contains)
-                      .length;
+            final dueIds = due.map((card) => card.id).toList();
+            final effectiveQueueIds = session == null
+                ? dueIds
+                : reviewSettings.autonomousLearning
+                ? <String>{...sessionQueueIds, ...dueIds}.toList()
+                : session.autonomousLearning == true
+                ? dueIds
+                : sessionQueueIds;
+            final todayTotal = effectiveQueueIds.length;
+            final completedToday =
+                session?.completedIds
+                    .where(effectiveQueueIds.toSet().contains)
+                    .length ??
+                0;
             final dueCount = math.max(0, todayTotal - completedToday).toInt();
             final reviewed = selectedCards
                 .where((card) => card.reviews > 0)
@@ -126,67 +137,65 @@ class _ReviewHomePageState extends ConsumerState<ReviewHomePage> {
                   physics: const AlwaysScrollableScrollPhysics(
                     parent: BouncingScrollPhysics(),
                   ),
-                  padding: const EdgeInsets.only(bottom: 16),
+                  padding: const EdgeInsets.only(
+                    bottom:
+                        AppLayoutMetrics.bottomNavigationContentPadding + 16,
+                  ),
                   child: Center(
-                  child: ConstrainedBox(
-                    constraints: const BoxConstraints(maxWidth: 430),
-                    child: Padding(
-                      padding: EdgeInsets.fromLTRB(
-                        16,
-                        compact ? 3 : 6,
-                        16,
-                        compact ? 4 : 8,
-                      ),
-                      child: Column(
-                        children: [
-                          _WelcomeHeader(compact: compact),
-                          SizedBox(height: compact ? 8 : 10),
-                          _CurrentDeckCard(
-                            folder: selectedFolder,
-                            cardCount: selectedCards.length,
-                            compact: compact,
-                            onRelearn: selectedFolder == null
-                                ? null
-                                : () => _relearnDeck(selectedFolder),
-                            onTap: folders.isEmpty
-                                ? null
-                                : () => _showFolderPicker(folders, values),
-                          ),
-                          SizedBox(height: compact ? 8 : 10),
-                          _DailyPlanCard(
-                            dueCount: dueCount,
-                            completed: completed,
-                            streakDays: streakDays,
-                            todayProgress: todayProgress,
-                            compact: compact,
-                            onStart: selectedFolder == null
-                                ? null
-                                : () => context.push(
-                                    Uri(
-                                      path: '/review/study',
-                                      queryParameters: {
-                                        'folder': selectedFolder,
-                                      },
-                                    ).toString(),
-                                  ),
-                          ),
-                          SizedBox(height: compact ? 10 : 12),
-                          _ProgressSection(
-                            completed: completed,
-                            compact: compact,
-                            onDetails: () => context.push('/review/history'),
-                          ),
-                          SizedBox(height: compact ? 10 : 12),
-                          _MotivationBanner(
-                            completedToday: completedToday,
-                            hasCards: selectedCards.isNotEmpty,
-                            compact: compact,
-                          ),
-                        ],
+                    child: ConstrainedBox(
+                      constraints: const BoxConstraints(maxWidth: 430),
+                      child: Padding(
+                        padding: EdgeInsets.fromLTRB(
+                          16,
+                          compact ? 3 : 6,
+                          16,
+                          compact ? 4 : 8,
+                        ),
+                        child: Column(
+                          children: [
+                            _WelcomeHeader(compact: compact),
+                            SizedBox(height: compact ? 8 : 10),
+                            _CurrentDeckCard(
+                              folder: selectedFolder,
+                              cardCount: selectedCards.length,
+                              compact: compact,
+                              onRelearn: selectedFolder == null
+                                  ? null
+                                  : () => _relearnDeck(selectedFolder),
+                              onTap: folders.isEmpty
+                                  ? null
+                                  : () => _showFolderPicker(folders, values),
+                            ),
+                            SizedBox(height: compact ? 8 : 10),
+                            _DailyPlanCard(
+                              dueCount: dueCount,
+                              reviewedCount: reviewed,
+                              completed: completed,
+                              streakDays: streakDays,
+                              todayProgress: todayProgress,
+                              compact: compact,
+                              onStart: selectedFolder == null
+                                  ? null
+                                  : () => context.push(
+                                      Uri(
+                                        path: '/review/study',
+                                        queryParameters: {
+                                          'folder': selectedFolder,
+                                        },
+                                      ).toString(),
+                                    ),
+                            ),
+                            SizedBox(height: compact ? 10 : 12),
+                            _MotivationBanner(
+                              completedToday: completedToday,
+                              hasCards: selectedCards.isNotEmpty,
+                              compact: compact,
+                            ),
+                          ],
+                        ),
                       ),
                     ),
                   ),
-                ),
                 );
               },
             );
@@ -198,11 +207,14 @@ class _ReviewHomePageState extends ConsumerState<ReviewHomePage> {
 
   List<String> _folders(List<CardModel> cards) {
     final folders = cards
-        .map((card) => card.folder.trim())
-        .where((folder) => folder.isNotEmpty)
+        .map((card) => _folderKey(card.folder))
         .toSet()
         .toList();
-    folders.sort();
+    folders.sort((left, right) {
+      if (left.isEmpty && right.isNotEmpty) return 1;
+      if (right.isEmpty && left.isNotEmpty) return -1;
+      return left.compareTo(right);
+    });
     return folders;
   }
 
@@ -236,20 +248,23 @@ class _ReviewHomePageState extends ConsumerState<ReviewHomePage> {
     _selectedFolder = loadSelectedReviewFolder(
       ref.read(sharedPreferencesProvider),
       account?.id,
-    );
+    )?.trim();
   }
 
   void _setSelectedFolder(String? folder) {
-    if (_selectedFolder == folder) return;
-    setState(() => _selectedFolder = folder);
+    final normalized = folder?.trim();
+    if (_selectedFolder == normalized) return;
+    setState(() => _selectedFolder = normalized);
     unawaited(
       saveSelectedReviewFolder(
         ref.read(sharedPreferencesProvider),
         _selectedFolderAccountId,
-        folder,
+        normalized,
       ),
     );
   }
+
+  static String _folderKey(String folder) => folder.trim();
 
   Future<void> _showFolderPicker(
     List<String> folders,
@@ -261,7 +276,12 @@ class _ReviewHomePageState extends ConsumerState<ReviewHomePage> {
       showDragHandle: true,
       builder: (sheetContext) => SafeArea(
         child: Padding(
-          padding: const EdgeInsets.fromLTRB(16, 0, 16, 18),
+          padding: const EdgeInsets.fromLTRB(
+            16,
+            0,
+            16,
+            AppLayoutMetrics.bottomNavigationContentPadding + 18,
+          ),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -275,7 +295,7 @@ class _ReviewHomePageState extends ConsumerState<ReviewHomePage> {
               ),
               ...folders.map((folder) {
                 final count = cards
-                    .where((card) => card.folder == folder)
+                    .where((card) => _folderKey(card.folder) == folder)
                     .length;
                 final current = folder == _selectedFolder;
                 return ListTile(
@@ -294,7 +314,7 @@ class _ReviewHomePageState extends ConsumerState<ReviewHomePage> {
                         : const Color(0xff9aa69f),
                   ),
                   title: Text(
-                    folder,
+                    folder.isEmpty ? '未分类' : folder,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: const TextStyle(fontWeight: FontWeight.w600),
@@ -343,9 +363,9 @@ class _ReviewHomePageState extends ConsumerState<ReviewHomePage> {
           .remove(reviewStudySessionKey(account.id, folder));
       ref.invalidate(cardsProvider);
       ref.invalidate(reviewEventsProvider);
-      await ref
-          .read(syncControllerProvider.notifier)
-          .sync(reason: 'relearn-deck');
+      final syncController = ref.read(syncControllerProvider.notifier);
+      syncController.scheduleSync(reason: 'relearn-deck');
+      unawaited(syncController.refreshPending());
       if (!mounted) return;
       ScaffoldMessenger.of(
         context,
@@ -483,7 +503,7 @@ class _CurrentDeckCard extends StatelessWidget {
   final VoidCallback? onRelearn;
   @override
   Widget build(BuildContext context) => Material(
-    color: Colors.white,
+    color: _ReviewColors.cardBackground,
     borderRadius: BorderRadius.circular(18),
     child: InkWell(
       onTap: onTap,
@@ -504,20 +524,6 @@ class _CurrentDeckCard extends StatelessWidget {
         ),
         child: Row(
           children: [
-            Container(
-              width: compact ? 34 : 38,
-              height: compact ? 34 : 38,
-              decoration: const BoxDecoration(
-                color: _ReviewColors.softGreen,
-                shape: BoxShape.circle,
-              ),
-              child: Icon(
-                Icons.folder_rounded,
-                color: _ReviewColors.green,
-                size: compact ? 18 : 20,
-              ),
-            ),
-            SizedBox(width: compact ? 9 : 11),
             Expanded(
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
@@ -533,7 +539,11 @@ class _CurrentDeckCard extends StatelessWidget {
                   ),
                   const SizedBox(height: 2),
                   Text(
-                    folder ?? '暂无可用牌组',
+                    folder == null
+                        ? '暂无可用牌组'
+                        : folder!.isEmpty
+                        ? '未分类'
+                        : folder!,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: TextStyle(
@@ -586,6 +596,7 @@ class _CurrentDeckCard extends StatelessWidget {
 class _DailyPlanCard extends StatelessWidget {
   const _DailyPlanCard({
     required this.dueCount,
+    required this.reviewedCount,
     required this.completed,
     required this.streakDays,
     required this.todayProgress,
@@ -594,6 +605,7 @@ class _DailyPlanCard extends StatelessWidget {
   });
 
   final int dueCount;
+  final int reviewedCount;
   final int completed;
   final int streakDays;
   final int todayProgress;
@@ -602,7 +614,7 @@ class _DailyPlanCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Container(
-    height: compact ? 214 : 244,
+    height: compact ? 278 : 318,
     padding: EdgeInsets.fromLTRB(
       compact ? 15 : 18,
       compact ? 13 : 17,
@@ -610,7 +622,7 @@ class _DailyPlanCard extends StatelessWidget {
       compact ? 10 : 13,
     ),
     decoration: BoxDecoration(
-      color: _ReviewColors.paleGreen,
+      color: _ReviewColors.cardBackground,
       borderRadius: BorderRadius.circular(24),
       border: Border.all(color: const Color(0xffedf4eb)),
       boxShadow: const [
@@ -625,12 +637,6 @@ class _DailyPlanCard extends StatelessWidget {
       children: [
         Row(
           children: [
-            Icon(
-              Icons.calendar_month_rounded,
-              size: compact ? 24 : 27,
-              color: _ReviewColors.ink,
-            ),
-            const SizedBox(width: 10),
             Expanded(
               child: Text(
                 '今日复习计划',
@@ -669,12 +675,14 @@ class _DailyPlanCard extends StatelessWidget {
         SizedBox(height: compact ? 4 : 6),
         Expanded(
           child: _DailyStatsRow(
-            completed: completed,
+            reviewedCount: reviewedCount,
             streakDays: streakDays,
             todayProgress: todayProgress,
             compact: compact,
           ),
         ),
+        SizedBox(height: compact ? 7 : 9),
+        _ProgressTimeline(completed: completed, compact: compact),
       ],
     ),
   );
@@ -682,13 +690,13 @@ class _DailyPlanCard extends StatelessWidget {
 
 class _DailyStatsRow extends StatelessWidget {
   const _DailyStatsRow({
-    required this.completed,
+    required this.reviewedCount,
     required this.streakDays,
     required this.todayProgress,
     required this.compact,
   });
 
-  final int completed;
+  final int reviewedCount;
   final int streakDays;
   final int todayProgress;
   final bool compact;
@@ -698,33 +706,27 @@ class _DailyStatsRow extends StatelessWidget {
     children: [
       Expanded(
         child: _DailyStat(
-          icon: Icons.track_changes_rounded,
-          value: '$completed/5',
-          label: '阶段目标',
+          value: '$reviewedCount',
+          label: '已复习卡片',
           color: _ReviewColors.green,
-          progress: completed / 5,
           compact: compact,
         ),
       ),
       _StatDivider(compact: compact),
       Expanded(
         child: _DailyStat(
-          icon: Icons.calendar_month_rounded,
           value: '$streakDays 天',
           label: '连续坚持',
           color: _ReviewColors.green,
-          progress: streakDays == 0 ? 0 : 1,
           compact: compact,
         ),
       ),
       _StatDivider(compact: compact),
       Expanded(
         child: _DailyStat(
-          icon: Icons.emoji_events_rounded,
           value: '$todayProgress%',
           label: '今日进度',
           color: const Color(0xfff0a300),
-          progress: todayProgress / 100,
           compact: compact,
         ),
       ),
@@ -747,46 +749,31 @@ class _StatDivider extends StatelessWidget {
 
 class _DailyStat extends StatelessWidget {
   const _DailyStat({
-    required this.icon,
     required this.value,
     required this.label,
     required this.color,
-    required this.progress,
     required this.compact,
   });
 
-  final IconData icon;
   final String value;
   final String label;
   final Color color;
-  final double progress;
   final bool compact;
 
   @override
   Widget build(BuildContext context) => Column(
     mainAxisAlignment: MainAxisAlignment.center,
     children: [
-      Row(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(icon, color: color, size: compact ? 22 : 25),
-          const SizedBox(width: 4),
-          Flexible(
-            child: Text(
-              value,
-              maxLines: 1,
-              softWrap: false,
-              overflow: TextOverflow.clip,
-              style: TextStyle(
-                color: color == const Color(0xfff0a300)
-                    ? _ReviewColors.darkGreen
-                    : _ReviewColors.darkGreen,
-                fontSize: compact ? 19 : 22,
-                fontWeight: FontWeight.w700,
-              ),
-            ),
-          ),
-        ],
+      Text(
+        value,
+        maxLines: 1,
+        softWrap: false,
+        overflow: TextOverflow.clip,
+        style: TextStyle(
+          color: color,
+          fontSize: compact ? 19 : 22,
+          fontWeight: FontWeight.w700,
+        ),
       ),
       const SizedBox(height: 2),
       Text(
@@ -796,20 +783,6 @@ class _DailyStat extends StatelessWidget {
           color: _ReviewColors.ink,
           fontSize: compact ? 11 : 12,
           fontWeight: FontWeight.w500,
-        ),
-      ),
-      SizedBox(height: compact ? 5 : 7),
-      SizedBox(
-        width: compact ? 64 : 82,
-        height: compact ? 6 : 7,
-        child: ClipRRect(
-          borderRadius: BorderRadius.circular(6),
-          child: LinearProgressIndicator(
-            value: progress.clamp(0, 1),
-            backgroundColor: const Color(0xffedf1ed),
-            valueColor: AlwaysStoppedAnimation<Color>(color),
-            minHeight: compact ? 6 : 7,
-          ),
         ),
       ),
     ],
@@ -947,121 +920,49 @@ class _StreakBadge extends StatelessWidget {
   );
 }
 
-class _ProgressSection extends StatelessWidget {
-  const _ProgressSection({
-    required this.completed,
-    required this.compact,
-    required this.onDetails,
-  });
+class _ProgressTimeline extends StatelessWidget {
+  const _ProgressTimeline({required this.completed, required this.compact});
 
   final int completed;
   final bool compact;
-  final VoidCallback onDetails;
 
   @override
-  Widget build(BuildContext context) => Container(
-    height: compact ? 112 : 122,
-    padding: EdgeInsets.fromLTRB(
-      compact ? 12 : 18,
-      compact ? 8 : 11,
-      compact ? 12 : 18,
-      compact ? 7 : 9,
-    ),
-    decoration: BoxDecoration(
-      color: Colors.white,
-      borderRadius: BorderRadius.circular(22),
-      boxShadow: const [
-        BoxShadow(
-          color: Color(0x10000000),
-          blurRadius: 18,
-          offset: Offset(0, 7),
-        ),
-      ],
-    ),
-    child: Column(
-      children: [
-        SizedBox(
-          height: 32,
-          child: Row(
-            children: [
-              Container(
-                width: 32,
-                height: 32,
-                decoration: const BoxDecoration(
-                  color: _ReviewColors.softGreen,
-                  shape: BoxShape.circle,
-                ),
-                child: const Icon(
-                  Icons.insights_rounded,
-                  color: _ReviewColors.green,
-                  size: 18,
-                ),
-              ),
-              const SizedBox(width: 9),
-              const Expanded(
-                child: Text(
-                  '你的进度',
-                  style: TextStyle(
-                    color: _ReviewColors.ink,
-                    fontSize: 18,
-                    fontWeight: FontWeight.w700,
-                  ),
-                ),
-              ),
-              TextButton.icon(
-                onPressed: onDetails,
-                style: TextButton.styleFrom(
-                  foregroundColor: _ReviewColors.ink,
-                  padding: EdgeInsets.zero,
-                  minimumSize: Size.zero,
-                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                ),
-                iconAlignment: IconAlignment.end,
-                icon: const Icon(Icons.chevron_right_rounded, size: 20),
-                label: const Text(
-                  '查看详情',
-                  style: TextStyle(fontSize: 15, fontWeight: FontWeight.w500),
-                ),
-              ),
-            ],
-          ),
-        ),
-        const SizedBox(height: 4),
-        Expanded(
-          child: CustomPaint(
-            size: const Size(double.infinity, 42),
-            painter: _ProgressLinePainter(completed),
-          ),
-        ),
-        const SizedBox(height: 2),
-        Row(
-          children: [
-            Expanded(
-              child: Text(
-                '$completed/5 阶段已完成',
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                  color: _ReviewColors.darkGreen,
-                  fontSize: compact ? 11 : 13,
-                  fontWeight: FontWeight.w600,
-                ),
+  Widget build(BuildContext context) => Column(
+    mainAxisSize: MainAxisSize.min,
+    children: [
+      SizedBox(
+        height: compact ? 42 : 50,
+        width: double.infinity,
+        child: CustomPaint(painter: _ProgressLinePainter(completed)),
+      ),
+      const SizedBox(height: 2),
+      Row(
+        children: [
+          Expanded(
+            child: Text(
+              '$completed/5 阶段已完成',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                color: _ReviewColors.darkGreen,
+                fontSize: compact ? 11 : 13,
+                fontWeight: FontWeight.w600,
               ),
             ),
-            Expanded(
-              child: Text(
-                completed == 5 ? '全部完成!' : '继续加油!',
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                  color: _ReviewColors.darkGreen,
-                  fontSize: compact ? 11 : 13,
-                  fontWeight: FontWeight.w600,
-                ),
+          ),
+          Expanded(
+            child: Text(
+              completed == 5 ? '全部完成!' : '继续加油!',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                color: _ReviewColors.darkGreen,
+                fontSize: compact ? 11 : 13,
+                fontWeight: FontWeight.w600,
               ),
             ),
-          ],
-        ),
-      ],
-    ),
+          ),
+        ],
+      ),
+    ],
   );
 }
 
@@ -1086,7 +987,7 @@ class _MotivationBanner extends StatelessWidget {
       compact ? 3 : 5,
     ),
     decoration: BoxDecoration(
-      color: Colors.white,
+      color: _ReviewColors.cardBackground,
       borderRadius: BorderRadius.circular(22),
       boxShadow: const [
         BoxShadow(

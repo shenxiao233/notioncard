@@ -18,4 +18,26 @@ void main() {
     expect(direct.avatar, startsWith('data:image/'));
     expect(nested.avatar, '/uploads/avatar.png');
   });
+
+  test('normalizes account roles for the account page', () {
+    final admin = AccountModel.fromJson({
+      'id': 'admin-1',
+      'username': 'admin',
+      'role': 'admin',
+    });
+    final licensed = AccountModel.fromJson({
+      'id': 'user-1',
+      'username': 'user',
+      'roles': ['user'],
+    });
+    final nestedAdmin = AccountModel.fromJson({
+      'id': 'admin-2',
+      'username': 'admin',
+      'profile': {'isAdmin': true},
+    });
+
+    expect(admin.role, 'admin');
+    expect(licensed.role, 'user');
+    expect(nestedAdmin.role, 'admin');
+  });
 }

@@ -49,6 +49,8 @@ dependencies:
   path: ^1.9.1
   connectivity_plus: ^6.1.4
   crypto: ^3.0.6
+  archive: ^3.6.1
+  image_picker: ^1.2.0
   package_info_plus: ^8.3.0
 
 dev_dependencies:

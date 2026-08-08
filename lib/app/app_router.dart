@@ -16,7 +16,9 @@ import '../features/market/market_page.dart';
 import '../features/review/review_home_page.dart';
 import '../features/review/review_history_page.dart';
 import '../features/review/study_page.dart';
+import '../features/settings/account_page.dart';
 import '../features/settings/settings_page.dart';
+import '../features/settings/settings_preferences_page.dart';
 import 'app_providers.dart';
 import 'app_shell.dart';
 
@@ -111,6 +113,16 @@ final routerProvider = Provider<GoRouter>((ref) {
           GoRoute(
             path: '/settings',
             builder: (context, state) => const SettingsPage(),
+            routes: [
+              GoRoute(
+                path: 'preferences',
+                builder: (context, state) => const SettingsPreferencesPage(),
+              ),
+              GoRoute(
+                path: 'account',
+                builder: (context, state) => const AccountPage(),
+              ),
+            ],
           ),
         ],
       ),

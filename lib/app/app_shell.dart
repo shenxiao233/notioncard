@@ -2,10 +2,12 @@ import 'dart:ui' show ImageFilter;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 
 import '../core/update/app_update_controller.dart';
 import '../core/widgets/app_brand.dart';
+import '../core/widgets/app_layout.dart';
 import 'app_providers.dart';
 
 class AppShell extends ConsumerWidget {
@@ -29,17 +31,78 @@ class AppShell extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final location = GoRouterState.of(context).uri.path;
     final isStudyFlow = location == '/review/study';
+    final isSettingsSubpage = location.startsWith('/settings/');
+    final isDocumentDetail = location.startsWith('/library/document/');
+    final isCardsSubpage = location.startsWith('/cards/');
+    final showBottomNavigation =
+        !isStudyFlow &&
+        !isSettingsSubpage &&
+        !isDocumentDetail &&
+        !isCardsSubpage;
     final update = ref.watch(appUpdateControllerProvider);
-    return Scaffold(
-      body: Column(
-        children: [
-          if (update.hasUpdate) _AppUpdateBanner(update: update),
-          Expanded(child: AppContentFrame(child: child)),
-        ],
+    final sync = ref.watch(syncControllerProvider);
+    return AnnotatedRegion<SystemUiOverlayStyle>(
+      value: const SystemUiOverlayStyle(
+        statusBarColor: Colors.transparent,
+        systemNavigationBarColor: Colors.transparent,
+        systemNavigationBarDividerColor: Colors.transparent,
+        systemNavigationBarIconBrightness: Brightness.dark,
+        systemNavigationBarContrastEnforced: false,
       ),
-      bottomNavigationBar: isStudyFlow
-          ? null
-          : _BottomNavigationBar(selectedIndex: _indexFor(location)),
+      child: Scaffold(
+        extendBody: true,
+        body: Stack(
+          children: [
+            Column(
+              children: [
+                if (update.hasUpdate) _AppUpdateBanner(update: update),
+                Expanded(child: AppContentFrame(child: child)),
+              ],
+            ),
+            if (showBottomNavigation)
+              Positioned(
+                left: 20,
+                right: 20,
+                bottom: AppLayoutMetrics.bottomNavigationBarBottomOffset,
+                child: _BottomNavigationBar(selectedIndex: _indexFor(location)),
+              ),
+            Positioned(
+              top: 0,
+              left: 0,
+              right: 0,
+              child: IgnorePointer(
+                child: AnimatedSwitcher(
+                  duration: const Duration(milliseconds: 180),
+                  reverseDuration: const Duration(milliseconds: 280),
+                  switchInCurve: Curves.easeOut,
+                  switchOutCurve: Curves.easeIn,
+                  child: sync.isBusy
+                      ? const _SyncLoadingIndicator(
+                          key: ValueKey('sync-loading'),
+                        )
+                      : const SizedBox(key: ValueKey('sync-idle'), height: 2),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _SyncLoadingIndicator extends StatelessWidget {
+  const _SyncLoadingIndicator({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      height: 2,
+      child: LinearProgressIndicator(
+        minHeight: 2,
+        backgroundColor: Colors.transparent,
+        color: Theme.of(context).colorScheme.primary.withValues(alpha: 0.72),
+      ),
     );
   }
 }
@@ -48,6 +111,8 @@ class _BottomNavigationBar extends StatelessWidget {
   const _BottomNavigationBar({required this.selectedIndex});
 
   final int selectedIndex;
+  static final _borderRadius = BorderRadius.circular(34);
+  static const _dockHeight = AppLayoutMetrics.bottomNavigationBarHeight;
 
   static const _items = <(IconData, IconData, String, String)>[
     (Icons.home_outlined, Icons.home_rounded, '首页', '/review'),
@@ -58,56 +123,83 @@ class _BottomNavigationBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return SafeArea(
-      top: false,
-      minimum: const EdgeInsets.only(bottom: 12),
-      child: FractionallySizedBox(
-        widthFactor: 0.9,
-        child: SizedBox(
-          height: 86,
-          child: Material(
-            color: Colors.white,
-            surfaceTintColor: Colors.transparent,
-            elevation: 4,
-            shadowColor: const Color(0x1c26302a),
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(34),
-              side: const BorderSide(color: Color(0x08000000)),
+    return SizedBox(
+      height: _dockHeight,
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          borderRadius: _borderRadius,
+          boxShadow: const [
+            BoxShadow(
+              color: Color(0x1626302a),
+              blurRadius: 22,
+              spreadRadius: 1,
+              offset: Offset(0, 8),
             ),
-            clipBehavior: Clip.antiAlias,
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
-              child: LayoutBuilder(
-                builder: (context, constraints) {
-                  const glowWidth = 90.0;
-                  final itemWidth = constraints.maxWidth / _items.length;
-                  return Stack(
-                    clipBehavior: Clip.none,
-                    children: [
-                      AnimatedPositioned(
-                        duration: const Duration(milliseconds: 520),
-                        curve: Curves.easeOutCubic,
-                        left:
-                            itemWidth * selectedIndex +
-                            (itemWidth - glowWidth) / 2,
-                        top: -5,
-                        width: glowWidth,
-                        height: 62,
-                        child: const IgnorePointer(
-                          child: _DiffuseSelectionGlow(),
-                        ),
-                      ),
-                      Row(
+          ],
+        ),
+        child: ClipRRect(
+          borderRadius: _borderRadius,
+          child: BackdropFilter(
+            filter: ImageFilter.blur(sigmaX: 26, sigmaY: 26),
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.topCenter,
+                  end: Alignment.bottomCenter,
+                  colors: [
+                    Colors.white.withValues(alpha: 0.48),
+                    Colors.white.withValues(alpha: 0.28),
+                  ],
+                ),
+                border: Border.all(
+                  color: Colors.white.withValues(alpha: 0.72),
+                  width: 0.9,
+                ),
+              ),
+              child: Material(
+                type: MaterialType.transparency,
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 7,
+                    vertical: 2,
+                  ),
+                  child: LayoutBuilder(
+                    builder: (context, constraints) {
+                      const glowWidth = 86.0;
+                      final itemWidth = constraints.maxWidth / _items.length;
+                      return Stack(
+                        clipBehavior: Clip.none,
                         children: [
-                          for (var index = 0; index < _items.length; index++)
-                            Expanded(
-                              child: _item(context, index, _items[index]),
+                          AnimatedPositioned(
+                            duration: const Duration(milliseconds: 520),
+                            curve: Curves.easeOutCubic,
+                            left:
+                                itemWidth * selectedIndex +
+                                (itemWidth - glowWidth) / 2,
+                            top: -4,
+                            width: glowWidth,
+                            height: 58,
+                            child: const IgnorePointer(
+                              child: _DiffuseSelectionGlow(),
                             ),
+                          ),
+                          Row(
+                            children: [
+                              for (
+                                var index = 0;
+                                index < _items.length;
+                                index++
+                              )
+                                Expanded(
+                                  child: _item(context, index, _items[index]),
+                                ),
+                            ],
+                          ),
                         ],
-                      ),
-                    ],
-                  );
-                },
+                      );
+                    },
+                  ),
+                ),
               ),
             ),
           ),
@@ -134,13 +226,13 @@ class _BottomNavigationBar extends StatelessWidget {
           behavior: HitTestBehavior.opaque,
           onTap: onTap,
           child: SizedBox(
-            height: 76,
+            height: 70,
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
                 SizedBox(
-                  width: 54,
-                  height: 31,
+                  width: 50,
+                  height: 28,
                   child: Center(
                     child: AnimatedSwitcher(
                       duration: const Duration(milliseconds: 300),
@@ -169,12 +261,12 @@ class _BottomNavigationBar extends StatelessWidget {
                         color: selected
                             ? const Color(0xff172019)
                             : const Color(0xff65706a),
-                        size: 25,
+                        size: 23,
                       ),
                     ),
                   ),
                 ),
-                const SizedBox(height: 2),
+                const SizedBox(height: 1),
                 AnimatedDefaultTextStyle(
                   duration: const Duration(milliseconds: 280),
                   curve: Curves.easeOutCubic,
@@ -182,7 +274,7 @@ class _BottomNavigationBar extends StatelessWidget {
                     color: selected
                         ? const Color(0xff172019)
                         : const Color(0xff65706a),
-                    fontSize: 12.5,
+                    fontSize: 12,
                     height: 1.2,
                     fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
                   ),
@@ -192,10 +284,10 @@ class _BottomNavigationBar extends StatelessWidget {
                     overflow: TextOverflow.ellipsis,
                   ),
                 ),
-                const SizedBox(height: 5),
+                const SizedBox(height: 4),
                 SizedBox(
-                  width: 7,
-                  height: 7,
+                  width: 6,
+                  height: 6,
                   child: AnimatedScale(
                     duration: const Duration(milliseconds: 280),
                     curve: Curves.easeOutBack,

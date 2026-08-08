@@ -42,6 +42,16 @@ class AuthResult {
   bool get isSuccess => account != null && failure == null;
 }
 
+class ProfileUpdateResult {
+  const ProfileUpdateResult.success(this.account) : failure = null;
+  const ProfileUpdateResult.failure(this.failure) : account = null;
+
+  final AccountModel? account;
+  final AuthFailure? failure;
+
+  bool get isSuccess => account != null && failure == null;
+}
+
 class AuthRepository {
   AuthRepository(
     this._preferences, {
@@ -104,6 +114,44 @@ class AuthRepository {
     String invitationCode,
   ) async => (await registerResult(username, password, invitationCode)).account;
 
+  Future<ProfileUpdateResult> updateProfile({
+    required String nickname,
+    String? avatar,
+    bool updateAvatar = false,
+  }) async {
+    final current = currentAccount;
+    final client = apiClient;
+    if (current == null || client == null) {
+      return const ProfileUpdateResult.failure(
+        AuthFailure(AuthFailureType.unknown),
+      );
+    }
+
+    try {
+      final response = await client.patch(
+        '/api/v2/me/profile',
+        data: {'nickname': nickname.trim(), if (updateAvatar) 'avatar': avatar},
+      );
+      final updated = _updatedAccount(
+        current,
+        nickname: nickname.trim(),
+        avatar: avatar,
+        updateAvatar: updateAvatar,
+        responseData: response.data,
+      );
+      await _saveAccount(updated);
+      return ProfileUpdateResult.success(currentAccount ?? updated);
+    } on ApiException catch (error) {
+      return ProfileUpdateResult.failure(
+        _classifyFailure(error, isLogin: false),
+      );
+    } catch (_) {
+      return const ProfileUpdateResult.failure(
+        AuthFailure(AuthFailureType.unknown),
+      );
+    }
+  }
+
   Future<AuthResult> _authenticate({
     required String path,
     required Map<String, dynamic> data,
@@ -161,6 +209,63 @@ class AuthRepository {
     return AuthFailure(AuthFailureType.server, details: error.message);
   }
 
+  AccountModel _updatedAccount(
+    AccountModel current, {
+    required String nickname,
+    required String? avatar,
+    required bool updateAvatar,
+    required Object? responseData,
+  }) {
+    final remote = _profileMap(responseData);
+    final merged = <String, dynamic>{
+      'id': current.id,
+      'username': current.username,
+      'nickname': current.nickname,
+      'status': current.status,
+      'role': current.role,
+      'avatar': current.avatar,
+      ...?remote,
+    };
+    final parsed = AccountModel.fromJson(merged);
+    final hasRemoteNickname = _containsAny(remote, const [
+      'nickname',
+      'displayName',
+    ]);
+    final hasRemoteAvatar = _containsAny(remote, const [
+      'avatar',
+      'avatarUrl',
+      'photo',
+      'image',
+    ]);
+    return parsed.copyWith(
+      id: parsed.id.isEmpty ? current.id : parsed.id,
+      username: parsed.username.isEmpty ? current.username : parsed.username,
+      nickname: hasRemoteNickname ? parsed.nickname : nickname,
+      status: parsed.status.isEmpty ? current.status : parsed.status,
+      role: parsed.role.isEmpty ? current.role : parsed.role,
+      avatar: hasRemoteAvatar
+          ? parsed.avatar
+          : updateAvatar
+          ? avatar
+          : current.avatar,
+    );
+  }
+
+  Map<String, dynamic>? _profileMap(Object? value) {
+    if (value is! Map) return null;
+    final map = Map<String, dynamic>.from(value);
+    for (final key in const ['user', 'profile', 'account', 'data']) {
+      final nested = _profileMap(map[key]);
+      if (nested != null) return nested;
+    }
+    return map;
+  }
+
+  bool _containsAny(Map<String, dynamic>? map, List<String> keys) {
+    if (map == null) return false;
+    return keys.any(map.containsKey);
+  }
+
   Future<void> logout() async {
     await secureStorage.delete(key: tokenKey);
     await _preferences.remove(_accountIdKey);
@@ -184,6 +289,7 @@ class AuthRepository {
         'username': account.username,
         'nickname': account.nickname,
         'status': account.status,
+        'role': account.role,
         'avatar': account.avatar,
       }),
     );

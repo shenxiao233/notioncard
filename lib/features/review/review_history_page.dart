@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../app/app_providers.dart';
 import '../../core/models/card_model.dart';
+import '../../core/widgets/app_layout.dart';
 
 class ReviewHistoryPage extends ConsumerWidget {
   const ReviewHistoryPage({super.key});
@@ -25,7 +26,12 @@ class ReviewHistoryPage extends ConsumerWidget {
                 (ratingCounts[event.rating.label] ?? 0) + 1;
           }
           return ListView(
-            padding: const EdgeInsets.fromLTRB(16, 14, 16, 30),
+            padding: const EdgeInsets.fromLTRB(
+              16,
+              14,
+              16,
+              AppLayoutMetrics.bottomNavigationContentPadding + 30,
+            ),
             children: [
               _StatsCard(total: values.length, today: today.length),
               const SizedBox(height: 18),

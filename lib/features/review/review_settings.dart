@@ -29,15 +29,25 @@ Future<bool> saveSelectedReviewFolder(
 }
 
 class ReviewSettings {
-  const ReviewSettings({this.newCardsPerDay = 20, this.reviewsPerDay = 100});
+  const ReviewSettings({
+    this.newCardsPerDay = 20,
+    this.reviewsPerDay = 100,
+    this.autonomousLearning = false,
+  });
 
   final int newCardsPerDay;
   final int reviewsPerDay;
+  final bool autonomousLearning;
 
-  ReviewSettings copyWith({int? newCardsPerDay, int? reviewsPerDay}) {
+  ReviewSettings copyWith({
+    int? newCardsPerDay,
+    int? reviewsPerDay,
+    bool? autonomousLearning,
+  }) {
     return ReviewSettings(
       newCardsPerDay: newCardsPerDay ?? this.newCardsPerDay,
       reviewsPerDay: reviewsPerDay ?? this.reviewsPerDay,
+      autonomousLearning: autonomousLearning ?? this.autonomousLearning,
     );
   }
 }
@@ -48,6 +58,7 @@ class ReviewSettingsController extends StateNotifier<ReviewSettings> {
 
   static const _newCardsKey = 'review.new_cards_per_day';
   static const _reviewsKey = 'review.reviews_per_day';
+  static const _autonomousLearningKey = 'review.autonomous_learning';
 
   final SharedPreferences _preferences;
   final String? _accountId;
@@ -60,6 +71,12 @@ class ReviewSettingsController extends StateNotifier<ReviewSettings> {
     return ReviewSettings(
       newCardsPerDay: _readInt(preferences, _newCardsKey, accountId, 20),
       reviewsPerDay: _readInt(preferences, _reviewsKey, accountId, 100),
+      autonomousLearning: _readBool(
+        preferences,
+        _autonomousLearningKey,
+        accountId,
+        false,
+      ),
     );
   }
 
@@ -72,6 +89,21 @@ class ReviewSettingsController extends StateNotifier<ReviewSettings> {
     final raw = preferences.get('$key.$accountId');
     final value = raw is num ? raw.toInt() : int.tryParse('$raw');
     return _normalize(value ?? fallback);
+  }
+
+  static bool _readBool(
+    SharedPreferences preferences,
+    String key,
+    String accountId,
+    bool fallback,
+  ) {
+    final raw = preferences.get('$key.$accountId');
+    if (raw is bool) return raw;
+    if (raw is num) return raw != 0;
+    final normalized = '$raw'.trim().toLowerCase();
+    if (normalized == 'true' || normalized == '1') return true;
+    if (normalized == 'false' || normalized == '0') return false;
+    return fallback;
   }
 
   Future<void> setNewCardsPerDay(int value) async {
@@ -88,6 +120,16 @@ class ReviewSettingsController extends StateNotifier<ReviewSettings> {
       await _preferences.setInt('$_reviewsKey.$_accountId', normalized);
     }
     state = state.copyWith(reviewsPerDay: normalized);
+  }
+
+  Future<void> setAutonomousLearning(bool enabled) async {
+    if (_accountId != null) {
+      await _preferences.setBool(
+        '$_autonomousLearningKey.$_accountId',
+        enabled,
+      );
+    }
+    state = state.copyWith(autonomousLearning: enabled);
   }
 
   static int _normalize(int value) {

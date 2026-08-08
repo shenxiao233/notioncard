@@ -7,6 +7,7 @@ import 'package:go_router/go_router.dart';
 
 import '../../app/app_providers.dart';
 import '../../core/models/card_model.dart';
+import '../../core/sound/app_sound_settings.dart';
 import '../../core/widgets/empty_state.dart';
 import '../../core/widgets/markdown_content.dart';
 import 'review_queue.dart';
@@ -39,6 +40,7 @@ class _StudyPageState extends ConsumerState<StudyPage> {
   String? _sessionKey;
   Future<void> _sessionWrite = Future<void>.value();
   bool _sessionInitialized = false;
+  bool _sessionAutonomousLearning = false;
   bool _favorite = false;
 
   @override
@@ -49,6 +51,9 @@ class _StudyPageState extends ConsumerState<StudyPage> {
 
     return PopScope<void>(
       canPop: true,
+      onPopInvokedWithResult: (didPop, result) {
+        if (didPop) _scheduleSessionSync();
+      },
       child: Scaffold(
         backgroundColor: _studyBackground,
         body: SafeArea(
@@ -66,18 +71,24 @@ class _StudyPageState extends ConsumerState<StudyPage> {
                   child: CircularProgressIndicator(color: _studyGreen),
                 );
               }
-              final limitedQueue = buildReviewQueue(
+              final generatedQueue = buildReviewQueue(
                 cards: values,
                 settings: settings,
                 folder: widget.selectedFolder,
               );
               final cardsById = {for (final card in values) card.id: card};
               _initializeSession(
-                limitedQueue: limitedQueue,
+                generatedQueue: generatedQueue,
                 cardsById: cardsById,
                 events: reviewEvents.valueOrNull,
+                autonomousLearning: settings.autonomousLearning,
               );
-              final queueIds = _reconcileQueue(cardsById);
+              final queueIds = _reconcileQueue(
+                cardsById: cardsById,
+                generatedQueue: generatedQueue,
+                events: reviewEvents.valueOrNull,
+                autonomousLearning: settings.autonomousLearning,
+              );
               final queue = queueIds
                   .map((id) => cardsById[id])
                   .whereType<CardModel>()
@@ -121,9 +132,10 @@ class _StudyPageState extends ConsumerState<StudyPage> {
   }
 
   void _initializeSession({
-    required List<CardModel> limitedQueue,
+    required List<CardModel> generatedQueue,
     required Map<String, CardModel> cardsById,
     required List<ReviewEventModel>? events,
+    required bool autonomousLearning,
   }) {
     if (_sessionInitialized) return;
     final account = ref.read(currentAccountProvider);
@@ -135,9 +147,18 @@ class _StudyPageState extends ConsumerState<StudyPage> {
       account.id,
       widget.selectedFolder,
     );
-    final savedQueueIds =
-        snapshot?.queueIds ?? limitedQueue.map((card) => card.id).toList();
-    _queueIds = _activeQueueIds(savedQueueIds, cardsById);
+    final generatedQueueIds = generatedQueue.map((card) => card.id).toList();
+    final savedQueueIds = snapshot?.queueIds ?? const <String>[];
+    final queueIds = switch (snapshot?.autonomousLearning) {
+      true when !autonomousLearning => generatedQueueIds,
+      _ when autonomousLearning => _appendQueueIds(
+        savedQueueIds,
+        generatedQueueIds,
+      ),
+      _ => snapshot == null ? generatedQueueIds : savedQueueIds,
+    };
+    _queueIds = _activeQueueIds(queueIds, cardsById);
+    _sessionAutonomousLearning = autonomousLearning;
     final completedIds = {
       ...?snapshot?.completedIds,
       ..._completedIdsFromEvents(events, _queueIds!, cardsById),
@@ -148,21 +169,48 @@ class _StudyPageState extends ConsumerState<StudyPage> {
     unawaited(_persistSession());
   }
 
-  List<String> _reconcileQueue(Map<String, CardModel> cardsById) {
+  List<String> _reconcileQueue({
+    required Map<String, CardModel> cardsById,
+    required List<CardModel> generatedQueue,
+    required List<ReviewEventModel>? events,
+    required bool autonomousLearning,
+  }) {
     final currentQueueIds = _queueIds ?? const <String>[];
-    final activeQueueIds = _activeQueueIds(currentQueueIds, cardsById);
+    final generatedQueueIds = generatedQueue.map((card) => card.id).toList();
+    final modeChanged = _sessionAutonomousLearning != autonomousLearning;
+    final desiredQueueIds = autonomousLearning
+        ? _appendQueueIds(currentQueueIds, generatedQueueIds)
+        : modeChanged
+        ? generatedQueueIds
+        : currentQueueIds;
+    final activeQueueIds = _activeQueueIds(desiredQueueIds, cardsById);
     final changed =
         activeQueueIds.length != currentQueueIds.length ||
         activeQueueIds.asMap().entries.any(
           (entry) => entry.value != currentQueueIds[entry.key],
         );
+    _sessionAutonomousLearning = autonomousLearning;
     if (changed) {
       _queueIds = activeQueueIds;
       _completedCardIds.retainAll(activeQueueIds.toSet());
+      _completedCardIds.addAll(
+        _completedIdsFromEvents(events, activeQueueIds, cardsById),
+      );
       _index = _firstPendingIndex(activeQueueIds, _completedCardIds);
+      unawaited(_persistSession());
+    } else if (modeChanged) {
       unawaited(_persistSession());
     }
     return activeQueueIds;
+  }
+
+  List<String> _appendQueueIds(List<String> current, List<String> additions) {
+    final result = [...current];
+    final existing = result.toSet();
+    for (final id in additions) {
+      if (existing.add(id)) result.add(id);
+    }
+    return result;
   }
 
   List<String> _activeQueueIds(
@@ -173,7 +221,7 @@ class _StudyPageState extends ConsumerState<StudyPage> {
       final card = cardsById[id];
       return card != null &&
           (widget.selectedFolder == null ||
-              card.folder == widget.selectedFolder);
+              card.folder.trim() == widget.selectedFolder!.trim());
     }).toList();
   }
 
@@ -189,7 +237,7 @@ class _StudyPageState extends ConsumerState<StudyPage> {
         .where(
           (event) =>
               (widget.selectedFolder == null ||
-                  event.folder == widget.selectedFolder) &&
+                  event.folder.trim() == widget.selectedFolder!.trim()) &&
               _sameDay(event.reviewedAt, now) &&
               queueSet.contains(event.cardId) &&
               cardsById.containsKey(event.cardId),
@@ -211,6 +259,7 @@ class _StudyPageState extends ConsumerState<StudyPage> {
       'date': reviewDateKey(DateTime.now()),
       'queueIds': queueIds,
       'completedIds': _completedCardIds.toList(),
+      'autonomousLearning': _sessionAutonomousLearning,
     });
     final write = _sessionWrite.then(
       (_) => ref.read(sharedPreferencesProvider).setString(key, payload),
@@ -280,6 +329,17 @@ class _StudyPageState extends ConsumerState<StudyPage> {
           .read(contentRepositoryProvider)
           .saveReview(card: updated, event: event);
       _ratingCounts[rating] = (_ratingCounts[rating] ?? 0) + 1;
+      unawaited(
+        ref.read(appSoundServiceProvider).play(_soundForRating(rating)),
+      );
+      final sessionComplete =
+          _queueIds != null && _index + 1 >= _queueIds!.length;
+      if (sessionComplete) {
+        unawaited(
+          ref.read(appSoundServiceProvider).play(AppSoundEvent.sessionComplete),
+        );
+        _scheduleSessionSync();
+      }
       if (!mounted) return;
       ref.invalidate(cardsProvider);
       ref.invalidate(reviewEventsProvider);
@@ -401,6 +461,19 @@ class _StudyPageState extends ConsumerState<StudyPage> {
       return '${difference.inDays} 天';
     }
     return '${next.month}/${next.day}';
+  }
+
+  AppSoundEvent _soundForRating(ReviewRating rating) => switch (rating) {
+    ReviewRating.again => AppSoundEvent.reviewAgain,
+    ReviewRating.hard => AppSoundEvent.reviewHard,
+    ReviewRating.good => AppSoundEvent.reviewGood,
+    ReviewRating.easy => AppSoundEvent.reviewEasy,
+  };
+
+  void _scheduleSessionSync() {
+    ref
+        .read(syncControllerProvider.notifier)
+        .scheduleSync(reason: 'review-session-finished');
   }
 
   String _plainText(String value) => value

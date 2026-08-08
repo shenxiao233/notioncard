@@ -1,7 +1,10 @@
+import 'dart:convert';
 import 'dart:typed_data';
 
+import 'package:archive/archive.dart';
 import 'package:dio/dio.dart';
 
+import '../../core/models/card_model.dart';
 import 'market_model.dart';
 import '../../core/network/api_client.dart';
 import '../../core/network/api_exception.dart';
@@ -10,6 +13,13 @@ class MarketRepository {
   MarketRepository({this.apiClient});
 
   final ApiClient? apiClient;
+
+  static const _maxPackageBytes = 50 * 1024 * 1024;
+  static const _maxFileCount = 2000;
+  static const _maxUncompressedBytes = 100 * 1024 * 1024;
+  static const _maxJsonBytes = 10 * 1024 * 1024;
+  static const _maxCardCount = 10000;
+  static const _maxTextLength = 20000;
 
   Future<List<MarketDeckModel>> search({String query = ''}) async {
     if (apiClient != null) {
@@ -97,6 +107,420 @@ class MarketRepository {
     return MarketDeckDownload(bytes: bytes, version: int.parse(version));
   }
 
+  Future<MarketDeckPackage> parseDeckPackage(
+    MarketDeckDownload download, {
+    required String deckId,
+    required String fallbackTitle,
+    String accountId = '',
+  }) async {
+    if (download.bytes.length > _maxPackageBytes) {
+      throw const MarketPackageException('牌组包过大，无法导入');
+    }
+
+    final archive = _decodeArchive(download.bytes);
+    final files = <String, ArchiveFile>{};
+    var uncompressedBytes = 0;
+    var fileCount = 0;
+    for (final file in archive) {
+      final path = _safeArchivePath(file.name);
+      if (file.isSymbolicLink) {
+        throw const MarketPackageException('牌组包包含不支持的文件引用');
+      }
+      if (!file.isFile) continue;
+      fileCount++;
+      if (fileCount > _maxFileCount) {
+        throw const MarketPackageException('牌组包文件数量超出限制');
+      }
+      uncompressedBytes += file.size;
+      if (uncompressedBytes > _maxUncompressedBytes) {
+        throw const MarketPackageException('牌组包解压后过大，无法导入');
+      }
+      if (files.containsKey(path)) {
+        throw const MarketPackageException('牌组包包含重复文件');
+      }
+      files[path] = file;
+    }
+
+    final manifestFile = _findRequiredFile(files, 'manifest.json');
+    final cardsFile = _findRequiredFile(files, 'cards.json');
+    final manifest = _decodeObject(
+      manifestFile,
+      fileName: 'manifest.json',
+      maxBytes: _maxJsonBytes,
+    );
+    final cardsJson = _decodeJson(
+      cardsFile,
+      fileName: 'cards.json',
+      maxBytes: _maxJsonBytes,
+    );
+
+    _validateManifestFiles(manifest, files);
+    final manifestVersion = _readVersion(manifest);
+    if (manifestVersion == null) {
+      throw const MarketPackageException('牌组包缺少版本信息');
+    }
+    if (manifestVersion != download.version) {
+      throw const MarketPackageException('牌组包版本与下载信息不一致');
+    }
+
+    final title =
+        _readText(
+          manifest['title'] ?? manifest['name'],
+          field: '牌组名称',
+          required: false,
+        ) ??
+        fallbackTitle.trim();
+    if (title.isEmpty) {
+      throw const MarketPackageException('牌组缺少有效名称');
+    }
+
+    final rawCards =
+        _extractCards(cardsJson) ??
+        _extractCards(manifest['cards']) ??
+        _extractCards(_decodeOptionalObject(files, 'deck.json'));
+    if (rawCards == null) {
+      throw const MarketPackageException('cards.json 中没有有效的卡片列表');
+    }
+    if (rawCards.isEmpty) {
+      throw const MarketPackageException('牌组中没有可导入的卡片');
+    }
+    if (rawCards.length > _maxCardCount) {
+      throw const MarketPackageException('牌组卡片数量超出限制');
+    }
+
+    final declaredCount = _readInt(manifest['cardCount']);
+    if (declaredCount != null && declaredCount != rawCards.length) {
+      throw const MarketPackageException('牌组卡片数量校验失败');
+    }
+
+    final now = DateTime.now();
+    final ids = <String>{};
+    final cards = <CardModel>[];
+    for (var index = 0; index < rawCards.length; index++) {
+      final raw = rawCards[index];
+      if (raw is! Map) {
+        throw MarketPackageException('第 ${index + 1} 张卡片格式无效');
+      }
+      final card = _cardFromJson(
+        Map<String, dynamic>.from(raw),
+        accountId: accountId,
+        deckId: deckId,
+        folder: title,
+        index: index,
+        now: now,
+      );
+      if (!ids.add(card.id)) {
+        throw MarketPackageException('卡片 ID 重复：${card.id}');
+      }
+      cards.add(card);
+    }
+
+    return MarketDeckPackage(
+      deckId: deckId,
+      title: title,
+      version: download.version,
+      cards: cards,
+    );
+  }
+
+  Archive _decodeArchive(Uint8List bytes) {
+    try {
+      return ZipDecoder().decodeBytes(bytes, verify: true);
+    } catch (_) {
+      throw const MarketPackageException('服务器返回的牌组包损坏，无法解压');
+    }
+  }
+
+  String _safeArchivePath(String rawPath) {
+    final path = rawPath.replaceAll('\\', '/');
+    final uri = Uri.tryParse(path);
+    if (path.isEmpty ||
+        path.startsWith('/') ||
+        path.startsWith('\\') ||
+        RegExp(r'^[a-zA-Z]:').hasMatch(path) ||
+        path.split('/').contains('..') ||
+        (uri != null && uri.hasScheme)) {
+      throw const MarketPackageException('牌组包包含不安全的文件路径');
+    }
+    return path.split('/').where((part) => part.isNotEmpty).join('/');
+  }
+
+  ArchiveFile _findRequiredFile(Map<String, ArchiveFile> files, String name) {
+    final exact = files[name];
+    if (exact != null) return exact;
+    final matches = files.entries
+        .where((entry) => entry.key.endsWith('/$name'))
+        .map((entry) => entry.value)
+        .toList();
+    if (matches.length != 1) {
+      throw MarketPackageException('牌组包缺少 $name');
+    }
+    return matches.single;
+  }
+
+  dynamic _decodeJson(
+    ArchiveFile file, {
+    required String fileName,
+    required int maxBytes,
+  }) {
+    if (file.size > maxBytes) {
+      throw MarketPackageException('$fileName 过大，无法解析');
+    }
+    try {
+      final content = file.content;
+      final bytes = content is List<int>
+          ? content
+          : List<int>.from(content as Iterable);
+      return jsonDecode(utf8.decode(bytes, allowMalformed: false));
+    } catch (_) {
+      throw MarketPackageException('$fileName 格式无效');
+    }
+  }
+
+  Map<String, dynamic> _decodeObject(
+    ArchiveFile file, {
+    required String fileName,
+    required int maxBytes,
+  }) {
+    final value = _decodeJson(file, fileName: fileName, maxBytes: maxBytes);
+    if (value is! Map) {
+      throw MarketPackageException('$fileName 必须是 JSON 对象');
+    }
+    return Map<String, dynamic>.from(value);
+  }
+
+  dynamic _decodeOptionalObject(Map<String, ArchiveFile> files, String name) {
+    final file = files[name];
+    if (file == null) return null;
+    return _decodeJson(file, fileName: name, maxBytes: _maxJsonBytes);
+  }
+
+  List<dynamic>? _extractCards(dynamic value) {
+    if (value is List) return List<dynamic>.from(value);
+    if (value is Map) {
+      for (final key in const ['cards', 'data', 'items']) {
+        final nested = value[key];
+        if (nested is List) return List<dynamic>.from(nested);
+      }
+    }
+    return null;
+  }
+
+  void _validateManifestFiles(
+    Map<String, dynamic> manifest,
+    Map<String, ArchiveFile> files,
+  ) {
+    final declared = manifest['files'];
+    if (declared == null) return;
+    if (declared is! List) {
+      throw const MarketPackageException('manifest.json 的文件清单格式无效');
+    }
+    for (final value in declared) {
+      if (value is! String || value.trim().isEmpty) {
+        throw const MarketPackageException('manifest.json 的文件清单格式无效');
+      }
+      final path = _safeArchivePath(value.trim());
+      if (!files.containsKey(path) &&
+          !files.keys.any((file) => file.endsWith('/$path'))) {
+        throw MarketPackageException('牌组包缺少文件：$path');
+      }
+    }
+  }
+
+  int? _readVersion(Map<String, dynamic> manifest) {
+    final value = manifest['version'] ?? manifest['deckVersion'];
+    if (value is int) return value;
+    if (value is num && value == value.roundToDouble()) return value.toInt();
+    if (value is String && value.trim().isNotEmpty) {
+      return int.tryParse(value.trim());
+    }
+    return null;
+  }
+
+  int? _readInt(Object? value) {
+    if (value is int) return value;
+    if (value is num) return value.toInt();
+    return int.tryParse(value?.toString() ?? '');
+  }
+
+  CardModel _cardFromJson(
+    Map<String, dynamic> json, {
+    required String accountId,
+    required String deckId,
+    required String folder,
+    required int index,
+    required DateTime now,
+  }) {
+    final sourceId = _readText(
+      json['id'] ?? json['cardId'],
+      field: '卡片 ID',
+      required: false,
+    );
+    final id = _boundedText(
+      sourceId == null || sourceId.isEmpty
+          ? 'market-$deckId-${index + 1}'
+          : 'market-$deckId-$sourceId',
+      '卡片 ID',
+    );
+    final question = _readText(
+      json['question'] ?? json['front'] ?? json['title'] ?? json['prompt'],
+      field: '卡片题面',
+    );
+    if (question == null || question.isEmpty) {
+      throw MarketPackageException('第 ${index + 1} 张卡片缺少题面');
+    }
+
+    final type = _parseCardType(json['type']);
+    final answer = _readStringList(
+      json['answer'] ??
+          json['answers'] ??
+          json['back'] ??
+          json['correctAnswer'],
+      field: '卡片答案',
+    );
+    final noteContent =
+        _readText(
+          json['noteContent'] ?? json['content'] ?? json['body'],
+          field: '卡片内容',
+          required: false,
+        ) ??
+        '';
+    final explanation =
+        _readText(
+          json['explanation'] ?? json['analysis'],
+          field: '卡片解析',
+          required: false,
+        ) ??
+        '';
+    final tags = _readStringList(json['tags'], field: '卡片标签', required: false);
+
+    return CardModel(
+      id: id,
+      accountId: accountId,
+      type: type,
+      folder: folder,
+      question: question,
+      options: _readOptions(json['options']),
+      answer: answer,
+      noteContent: noteContent,
+      explanation: explanation,
+      tags: tags,
+      dueAt: now,
+      createdAt: now,
+      updatedAt: now,
+      reviews: 0,
+      mastery: '',
+      suspended: false,
+      fsrs: FsrsSnapshot(
+        state: FsrsState.newCard,
+        dueAt: now,
+        stability: 0,
+        difficulty: 5,
+        reps: 0,
+        lapses: 0,
+      ),
+    );
+  }
+
+  CardType _parseCardType(Object? value) {
+    final normalized = value?.toString().trim().toLowerCase().replaceAll(
+      RegExp(r'[\s_-]'),
+      '',
+    );
+    switch (normalized) {
+      case null:
+      case '':
+      case 'note':
+      case 'basic':
+      case 'flashcard':
+        return CardType.note;
+      case 'single':
+      case 'singlechoice':
+      case 'singlechoicequestion':
+        return CardType.single;
+      case 'multiple':
+      case 'multiplechoice':
+      case 'multiplechoicequestion':
+        return CardType.multiple;
+      case 'truefalse':
+      case 'boolean':
+      case 'judge':
+        return CardType.trueFalse;
+      default:
+        throw MarketPackageException('不支持的卡片类型：$value');
+    }
+  }
+
+  Map<String, String> _readOptions(Object? value) {
+    if (value == null) return const {};
+    if (value is Map) {
+      return value.map(
+        (key, value) => MapEntry(
+          _boundedText(key.toString(), '卡片选项'),
+          _boundedText(value.toString(), '卡片选项'),
+        ),
+      );
+    }
+    if (value is List) {
+      return {
+        for (var index = 0; index < value.length; index++)
+          String.fromCharCode(65 + index): _boundedText(
+            value[index].toString(),
+            '卡片选项',
+          ),
+      };
+    }
+    throw const MarketPackageException('卡片选项格式无效');
+  }
+
+  List<String> _readStringList(
+    Object? value, {
+    required String field,
+    bool required = false,
+  }) {
+    if (value == null) {
+      if (required) throw MarketPackageException('$field不能为空');
+      return const [];
+    }
+    final values = value is List
+        ? value
+        : value is String
+        ? (value.contains(',') ? value.split(',') : [value])
+        : [value];
+    final result = values
+        .map((item) => item is String ? item.trim() : item.toString().trim())
+        .where((item) => item.isNotEmpty)
+        .map((item) => _boundedText(item, field))
+        .toList();
+    if (required && result.isEmpty) {
+      throw MarketPackageException('$field不能为空');
+    }
+    return result;
+  }
+
+  String? _readText(
+    Object? value, {
+    required String field,
+    bool required = true,
+  }) {
+    if (value == null) {
+      if (required) throw MarketPackageException('$field不能为空');
+      return null;
+    }
+    final text = value.toString().trim();
+    if (required && text.isEmpty) {
+      throw MarketPackageException('$field不能为空');
+    }
+    return text.isEmpty ? null : _boundedText(text, field);
+  }
+
+  String _boundedText(String value, String field) {
+    if (value.length > _maxTextLength) {
+      throw MarketPackageException('$field过长');
+    }
+    return value;
+  }
+
   MarketDeckModel _fromJson(Map<String, dynamic> json) {
     final manifest = json['manifest'] is Map
         ? Map<String, dynamic>.from(json['manifest'] as Map)
@@ -176,4 +600,27 @@ class MarketDeckDownload {
 
   final Uint8List bytes;
   final int version;
+}
+
+class MarketDeckPackage {
+  const MarketDeckPackage({
+    required this.deckId,
+    required this.title,
+    required this.version,
+    required this.cards,
+  });
+
+  final String deckId;
+  final String title;
+  final int version;
+  final List<CardModel> cards;
+}
+
+class MarketPackageException implements Exception {
+  const MarketPackageException(this.message);
+
+  final String message;
+
+  @override
+  String toString() => message;
 }

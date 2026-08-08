@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 
 import '../../app/app_providers.dart';
 import '../../core/models/card_model.dart';
+import '../../core/widgets/app_layout.dart';
 import '../../core/widgets/app_visuals.dart';
 import '../../core/widgets/empty_state.dart';
 
@@ -29,7 +30,12 @@ class CardsPage extends ConsumerWidget {
             onRefresh: () => _refreshCards(ref),
             child: ListView(
               physics: const AlwaysScrollableScrollPhysics(),
-              padding: const EdgeInsets.fromLTRB(16, 12, 16, 28),
+              padding: const EdgeInsets.fromLTRB(
+                16,
+                12,
+                16,
+                AppLayoutMetrics.bottomNavigationContentPadding + 28,
+              ),
               children: [
                 _LibrarySummary(cards: values),
                 const SizedBox(height: 24),
@@ -147,9 +153,7 @@ class _DeckCardsPageState extends ConsumerState<DeckCardsPage> {
                   if (filtered.isEmpty)
                     EmptyState(
                       title: all.isEmpty ? '牌组为空' : '没有匹配的卡片',
-                      message: all.isEmpty
-                          ? '可以从桌面端同步卡片到这里。'
-                          : '尝试清除搜索或筛选条件。',
+                      message: all.isEmpty ? '可以从桌面端同步卡片到这里。' : '尝试清除搜索或筛选条件。',
                       icon: Icons.style_outlined,
                       action: all.isEmpty || !_hasFilters
                           ? null
@@ -357,9 +361,9 @@ class _DeckCardsPageState extends ConsumerState<DeckCardsPage> {
       }
     } catch (error) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('添加卡片失败：$error')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('添加卡片失败：$error')));
       }
     }
   }
@@ -392,9 +396,9 @@ class _DeckCardsPageState extends ConsumerState<DeckCardsPage> {
       }
     } catch (error) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('更新卡片失败：$error')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('更新卡片失败：$error')));
       }
     }
   }

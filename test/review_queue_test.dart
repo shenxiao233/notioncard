@@ -55,6 +55,36 @@ void main() {
       'recent-review',
     ]);
   });
+
+  test('autonomous learning includes all due new and scheduled cards', () {
+    final cards = [
+      _card('new-1', FsrsState.newCard),
+      _card('new-2', FsrsState.newCard),
+      _card('new-3', FsrsState.newCard),
+      _card('review-1', FsrsState.review),
+      _card('review-2', FsrsState.relearning),
+    ];
+
+    final queue = buildReviewQueue(
+      cards: cards,
+      settings: const ReviewSettings(
+        newCardsPerDay: 1,
+        reviewsPerDay: 1,
+        autonomousLearning: true,
+      ),
+      folder: '默认牌组',
+      now: DateTime(2026, 1, 2),
+    );
+
+    expect(queue.map((card) => card.id), [
+      'new-1',
+      'new-2',
+      'new-3',
+      'review-1',
+      'review-2',
+    ]);
+  });
+
   test('review settings are persisted per account', () async {
     SharedPreferences.setMockInitialValues({});
     final preferences = await SharedPreferences.getInstance();
@@ -62,14 +92,17 @@ void main() {
 
     await first.setNewCardsPerDay(7);
     await first.setReviewsPerDay(42);
+    await first.setAutonomousLearning(true);
 
     final second = ReviewSettingsController(preferences, 'account-a');
     final other = ReviewSettingsController(preferences, 'account-b');
 
     expect(second.state.newCardsPerDay, 7);
     expect(second.state.reviewsPerDay, 42);
+    expect(second.state.autonomousLearning, isTrue);
     expect(other.state.newCardsPerDay, 20);
     expect(other.state.reviewsPerDay, 100);
+    expect(other.state.autonomousLearning, isFalse);
   });
 
   test('review settings tolerate legacy preference values', () async {

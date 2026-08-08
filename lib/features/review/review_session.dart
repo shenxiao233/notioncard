@@ -6,10 +6,12 @@ class ReviewSessionSnapshot {
   const ReviewSessionSnapshot({
     required this.queueIds,
     required this.completedIds,
+    this.autonomousLearning,
   });
 
   final List<String> queueIds;
   final Set<String> completedIds;
+  final bool? autonomousLearning;
 }
 
 String reviewStudySessionKey(String accountId, String? folder) {
@@ -39,6 +41,9 @@ ReviewSessionSnapshot? loadReviewSession(
     return ReviewSessionSnapshot(
       queueIds: queueIds,
       completedIds: completedIds,
+      autonomousLearning: data['autonomousLearning'] is bool
+          ? data['autonomousLearning'] as bool
+          : null,
     );
   } catch (_) {
     return null;

@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
 
 import '../../app/app_providers.dart';
+import '../../core/widgets/app_layout.dart';
 import '../../core/widgets/app_visuals.dart';
 import '../../core/widgets/empty_state.dart';
 import 'market_model.dart';
@@ -74,7 +75,12 @@ class _MarketPageState extends ConsumerState<MarketPage> {
               },
               child: ListView(
                 physics: const AlwaysScrollableScrollPhysics(),
-                padding: const EdgeInsets.fromLTRB(16, 12, 16, 28),
+                padding: const EdgeInsets.fromLTRB(
+                  16,
+                  12,
+                  16,
+                  AppLayoutMetrics.bottomNavigationContentPadding + 28,
+                ),
                 children: [
                   _MarketSearchBar(
                     controller: _searchController,

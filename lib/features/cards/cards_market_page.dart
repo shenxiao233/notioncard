@@ -6,14 +6,15 @@ import 'package:intl/intl.dart';
 import '../../app/app_providers.dart';
 import '../../core/models/card_model.dart';
 import '../../core/models/document_model.dart';
+import '../../core/widgets/app_layout.dart';
 import '../../core/widgets/app_visuals.dart';
 import '../../core/widgets/empty_state.dart';
 
-enum KnowledgeBaseSection { recent, documents, cards }
+enum KnowledgeBaseSection { documents, cards }
 
 class KnowledgeBasePage extends ConsumerStatefulWidget {
   const KnowledgeBasePage({
-    this.initialSection = KnowledgeBaseSection.recent,
+    this.initialSection = KnowledgeBaseSection.documents,
     super.key,
   });
 
@@ -50,12 +51,13 @@ class _KnowledgeBasePageState extends ConsumerState<KnowledgeBasePage> {
               onRefresh: _refresh,
               child: ListView(
                 physics: const AlwaysScrollableScrollPhysics(),
-                padding: const EdgeInsets.fromLTRB(16, 10, 16, 32),
+                padding: const EdgeInsets.fromLTRB(
+                  16,
+                  10,
+                  16,
+                  AppLayoutMetrics.bottomNavigationContentPadding + 32,
+                ),
                 children: [
-                  _KnowledgeBaseHeader(
-                    onSearch: () => _showSearch(documentValues, cardValues),
-                  ),
-                  const SizedBox(height: 18),
                   _ShortcutRow(
                     documentCount: documentValues.length,
                     cardCount: cardValues.length,
@@ -98,62 +100,6 @@ class _KnowledgeBasePageState extends ConsumerState<KnowledgeBasePage> {
       ref.read(cardsProvider.future),
     ]);
   }
-
-  Future<void> _showSearch(
-    List<DocumentModel> documents,
-    List<CardModel> cards,
-  ) async {
-    final result = await showSearch<_KnowledgeBaseSearchResult?>(
-      context: context,
-      delegate: _KnowledgeBaseSearchDelegate(
-        documents: documents,
-        cards: cards,
-      ),
-    );
-    if (!mounted || result == null) return;
-    context.push(result.route);
-  }
-}
-
-class _KnowledgeBaseHeader extends StatelessWidget {
-  const _KnowledgeBaseHeader({required this.onSearch});
-
-  final VoidCallback onSearch;
-
-  @override
-  Widget build(BuildContext context) => Row(
-    crossAxisAlignment: CrossAxisAlignment.center,
-    children: [
-      const Expanded(
-        child: Text(
-          '知识库',
-          style: TextStyle(
-            color: AppVisualColors.ink,
-            fontSize: 30,
-            fontWeight: FontWeight.w800,
-            height: 1.15,
-          ),
-        ),
-      ),
-      Material(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(18),
-        child: InkWell(
-          onTap: onSearch,
-          borderRadius: BorderRadius.circular(18),
-          child: const SizedBox(
-            width: 56,
-            height: 56,
-            child: Icon(
-              Icons.search_rounded,
-              size: 28,
-              color: AppVisualColors.ink,
-            ),
-          ),
-        ),
-      ),
-    ],
-  );
 }
 
 class _ShortcutRow extends StatelessWidget {
@@ -303,12 +249,6 @@ class _SectionSwitcher extends StatelessWidget {
     child: Row(
       children: [
         _SectionButton(
-          label: '最近使用',
-          section: KnowledgeBaseSection.recent,
-          selected: selected,
-          onChanged: onChanged,
-        ),
-        _SectionButton(
           label: '我的文档',
           section: KnowledgeBaseSection.documents,
           selected: selected,
@@ -398,10 +338,6 @@ class _SectionContent extends StatelessWidget {
   Widget build(BuildContext context) {
     final decks = _groupCards(cards);
     return switch (section) {
-      KnowledgeBaseSection.recent => _RecentSection(
-        documents: documents,
-        decks: decks,
-      ),
       KnowledgeBaseSection.documents => _DocumentsSection(documents: documents),
       KnowledgeBaseSection.cards => _CardsSection(decks: decks),
     };
@@ -422,54 +358,6 @@ class _SectionContent extends StatelessWidget {
   }
 }
 
-class _RecentSection extends StatelessWidget {
-  const _RecentSection({required this.documents, required this.decks});
-
-  final List<DocumentModel> documents;
-  final List<_DeckSummary> decks;
-
-  @override
-  Widget build(BuildContext context) {
-    final entries = <_RecentEntry>[
-      ...documents.map(
-        (document) => _RecentEntry(
-          title: document.title,
-          subtitle: '${_folderLabel(document.folder)} · 文档',
-          updatedAt: document.updatedAt,
-          icon: Icons.description_rounded,
-          iconColor: AppVisualColors.green,
-          iconBackground: AppVisualColors.softGreen,
-          onTap: () => context.push('/library/document/${document.id}'),
-        ),
-      ),
-      ...decks.map(
-        (deck) => _RecentEntry(
-          title: deck.name,
-          subtitle: '本地牌组 · ${deck.cards.length} 张卡牌',
-          updatedAt: deck.updatedAt,
-          icon: Icons.style_rounded,
-          iconColor: const Color(0xff4778e8),
-          iconBackground: const Color(0xfff0f4ff),
-          onTap: () => context.push('/cards/deck', extra: deck.routeFolder),
-        ),
-      ),
-    ]..sort((left, right) => right.updatedAt.compareTo(left.updatedAt));
-
-    final visible = entries.take(5).toList();
-    return _SectionPanel(
-      title: '最近使用',
-      subtitle: visible.isEmpty ? null : '最近打开的文档和牌组',
-      child: visible.isEmpty
-          ? const EmptyState(
-              title: '还没有最近使用的资源',
-              message: '打开文档或牌组后，这里会显示最近内容。',
-              icon: Icons.history_rounded,
-            )
-          : _ResourceList(entries: visible),
-    );
-  }
-}
-
 class _DocumentsSection extends StatelessWidget {
   const _DocumentsSection({required this.documents});
 
@@ -479,31 +367,27 @@ class _DocumentsSection extends StatelessWidget {
   Widget build(BuildContext context) {
     final entries = [...documents]
       ..sort((left, right) => right.updatedAt.compareTo(left.updatedAt));
-    return _SectionPanel(
+    return _LimitedResourceSection(
       title: '我的文档',
       subtitle: '${documents.length} 篇文档',
-      child: entries.isEmpty
-          ? const EmptyState(
-              title: '还没有同步文档',
-              message: '完成首次同步后，文档会显示在这里。',
-              icon: Icons.description_outlined,
-            )
-          : _ResourceList(
-              entries: entries
-                  .map(
-                    (document) => _RecentEntry(
-                      title: document.title,
-                      subtitle: _folderLabel(document.folder),
-                      updatedAt: document.updatedAt,
-                      icon: Icons.description_rounded,
-                      iconColor: AppVisualColors.green,
-                      iconBackground: AppVisualColors.softGreen,
-                      onTap: () =>
-                          context.push('/library/document/${document.id}'),
-                    ),
-                  )
-                  .toList(),
+      entries: entries
+          .map(
+            (document) => _ResourceEntry(
+              title: document.title,
+              subtitle: _folderLabel(document.folder),
+              updatedAt: document.updatedAt,
+              icon: Icons.description_rounded,
+              iconColor: AppVisualColors.green,
+              iconBackground: AppVisualColors.softGreen,
+              onTap: () => context.push('/library/document/${document.id}'),
             ),
+          )
+          .toList(),
+      emptyState: const EmptyState(
+        title: '还没有同步文档',
+        message: '完成首次同步后，文档会显示在这里。',
+        icon: Icons.description_outlined,
+      ),
     );
   }
 }
@@ -514,32 +398,27 @@ class _CardsSection extends StatelessWidget {
   final List<_DeckSummary> decks;
 
   @override
-  Widget build(BuildContext context) => _SectionPanel(
+  Widget build(BuildContext context) => _LimitedResourceSection(
     title: '我的卡牌',
     subtitle: '${decks.length} 个牌组 · ${_cardCount(decks)} 张卡牌',
-    child: decks.isEmpty
-        ? const EmptyState(
-            title: '还没有本地卡牌',
-            message: '同步内容后，牌组会显示在这里。',
-            icon: Icons.style_outlined,
-          )
-        : _ResourceList(
-            entries: decks
-                .map(
-                  (deck) => _RecentEntry(
-                    title: deck.name,
-                    subtitle:
-                        '${deck.cards.length} 张卡牌 · ${deck.dueCount} 张待复习',
-                    updatedAt: deck.updatedAt,
-                    icon: Icons.style_rounded,
-                    iconColor: const Color(0xff4778e8),
-                    iconBackground: const Color(0xfff0f4ff),
-                    onTap: () =>
-                        context.push('/cards/deck', extra: deck.routeFolder),
-                  ),
-                )
-                .toList(),
+    entries: decks
+        .map(
+          (deck) => _ResourceEntry(
+            title: deck.name,
+            subtitle: '${deck.cards.length} 张卡牌 · ${deck.dueCount} 张待复习',
+            updatedAt: deck.updatedAt,
+            icon: Icons.style_rounded,
+            iconColor: const Color(0xff4778e8),
+            iconBackground: const Color(0xfff0f4ff),
+            onTap: () => context.push('/cards/deck', extra: deck.routeFolder),
           ),
+        )
+        .toList(),
+    emptyState: const EmptyState(
+      title: '还没有本地卡牌',
+      message: '同步内容后，牌组会显示在这里。',
+      icon: Icons.style_outlined,
+    ),
   );
 
   static int _cardCount(List<_DeckSummary> decks) {
@@ -547,22 +426,99 @@ class _CardsSection extends StatelessWidget {
   }
 }
 
+class _LimitedResourceSection extends StatefulWidget {
+  const _LimitedResourceSection({
+    required this.title,
+    required this.subtitle,
+    required this.entries,
+    required this.emptyState,
+  });
+
+  static const maxInitialEntries = 5;
+
+  final String title;
+  final String subtitle;
+  final List<_ResourceEntry> entries;
+  final Widget emptyState;
+
+  @override
+  State<_LimitedResourceSection> createState() =>
+      _LimitedResourceSectionState();
+}
+
+class _LimitedResourceSectionState extends State<_LimitedResourceSection> {
+  bool _showAll = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final hasMore =
+        widget.entries.length > _LimitedResourceSection.maxInitialEntries;
+    final visibleEntries =
+        widget.entries.length <= _LimitedResourceSection.maxInitialEntries ||
+            _showAll
+        ? widget.entries
+        : widget.entries
+              .take(_LimitedResourceSection.maxInitialEntries)
+              .toList();
+
+    return _SectionPanel(
+      title: widget.title,
+      subtitle: widget.subtitle,
+      trailing: hasMore
+          ? TextButton.icon(
+              onPressed: () => setState(() => _showAll = !_showAll),
+              icon: Icon(
+                _showAll
+                    ? Icons.keyboard_arrow_up_rounded
+                    : Icons.keyboard_arrow_down_rounded,
+                size: 18,
+              ),
+              label: Text(_showAll ? '收起' : '显示更多'),
+              style: TextButton.styleFrom(
+                foregroundColor: AppVisualColors.darkGreen,
+                padding: EdgeInsets.zero,
+                minimumSize: Size.zero,
+                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                visualDensity: VisualDensity.compact,
+              ),
+            )
+          : null,
+      child: widget.entries.isEmpty
+          ? widget.emptyState
+          : _ResourceList(entries: visibleEntries),
+    );
+  }
+}
+
 class _SectionPanel extends StatelessWidget {
   const _SectionPanel({
     required this.title,
     required this.subtitle,
+    this.trailing,
     required this.child,
   });
 
   final String title;
   final String? subtitle;
+  final Widget? trailing;
   final Widget child;
 
   @override
   Widget build(BuildContext context) => Column(
     crossAxisAlignment: CrossAxisAlignment.start,
     children: [
-      AppVisualSectionTitle(title: title, subtitle: subtitle),
+      Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Expanded(
+            child: AppVisualSectionTitle(title: title, subtitle: subtitle),
+          ),
+          if (trailing != null) ...[
+            const SizedBox(width: 8),
+            Padding(padding: const EdgeInsets.only(top: 1), child: trailing!),
+          ],
+        ],
+      ),
       const SizedBox(height: 10),
       child,
     ],
@@ -572,7 +528,7 @@ class _SectionPanel extends StatelessWidget {
 class _ResourceList extends StatelessWidget {
   const _ResourceList({required this.entries});
 
-  final List<_RecentEntry> entries;
+  final List<_ResourceEntry> entries;
 
   @override
   Widget build(BuildContext context) => Container(
@@ -596,7 +552,7 @@ class _ResourceList extends StatelessWidget {
 class _ResourceRow extends StatelessWidget {
   const _ResourceRow({required this.entry});
 
-  final _RecentEntry entry;
+  final _ResourceEntry entry;
 
   @override
   Widget build(BuildContext context) => Material(
@@ -673,8 +629,8 @@ class _ResourceRow extends StatelessWidget {
   );
 }
 
-class _RecentEntry {
-  const _RecentEntry({
+class _ResourceEntry {
+  const _ResourceEntry({
     required this.title,
     required this.subtitle,
     required this.updatedAt,
@@ -727,7 +683,7 @@ class _KnowledgeBaseError extends StatelessWidget {
   @override
   Widget build(BuildContext context) => Center(
     child: EmptyState(
-      title: '知识库加载失败',
+      title: '资源加载失败',
       message: '请检查网络或本地缓存，然后重试。',
       icon: Icons.cloud_off_outlined,
       action: FilledButton.icon(
@@ -737,149 +693,4 @@ class _KnowledgeBaseError extends StatelessWidget {
       ),
     ),
   );
-}
-
-class _KnowledgeBaseSearchResult {
-  const _KnowledgeBaseSearchResult({required this.route});
-
-  final String route;
-}
-
-class _KnowledgeBaseSearchDelegate
-    extends SearchDelegate<_KnowledgeBaseSearchResult?> {
-  _KnowledgeBaseSearchDelegate({required this.documents, required this.cards});
-
-  final List<DocumentModel> documents;
-  final List<CardModel> cards;
-
-  @override
-  List<Widget>? buildActions(BuildContext context) => [
-    if (query.isNotEmpty)
-      IconButton(
-        tooltip: '清除搜索',
-        onPressed: () => query = '',
-        icon: const Icon(Icons.clear_rounded),
-      ),
-  ];
-
-  @override
-  Widget? buildLeading(BuildContext context) => IconButton(
-    tooltip: '返回',
-    onPressed: () => close(context, null),
-    icon: const Icon(Icons.arrow_back_rounded),
-  );
-
-  @override
-  Widget buildResults(BuildContext context) => _buildResults(context);
-
-  @override
-  Widget buildSuggestions(BuildContext context) => _buildResults(context);
-
-  Widget _buildResults(BuildContext context) {
-    final value = query.trim().toLowerCase();
-    if (value.isEmpty) {
-      return const EmptyState(
-        title: '搜索知识库',
-        message: '输入标题、牌组或卡牌内容',
-        icon: Icons.search_rounded,
-      );
-    }
-
-    final results = <_SearchListItem>[
-      ...documents
-          .where(
-            (document) =>
-                '${document.title} ${document.folder} ${document.body}'
-                    .toLowerCase()
-                    .contains(value),
-          )
-          .map(
-            (document) => _SearchListItem(
-              title: document.title,
-              subtitle: '${_folderLabel(document.folder)} · 文档',
-              icon: Icons.description_rounded,
-              color: AppVisualColors.green,
-              background: AppVisualColors.softGreen,
-              result: _KnowledgeBaseSearchResult(
-                route: '/library/document/${document.id}',
-              ),
-            ),
-          ),
-      ...cards
-          .where(
-            (card) =>
-                '${card.question} ${card.noteContent} ${card.tags.join(' ')}'
-                    .toLowerCase()
-                    .contains(value),
-          )
-          .take(20)
-          .map(
-            (card) => _SearchListItem(
-              title: card.question,
-              subtitle: '${_folderLabel(card.folder)} · 卡牌',
-              icon: Icons.style_rounded,
-              color: const Color(0xff4778e8),
-              background: const Color(0xfff0f4ff),
-              result: _KnowledgeBaseSearchResult(route: '/cards/${card.id}'),
-            ),
-          ),
-    ];
-
-    if (results.isEmpty) {
-      return const EmptyState(
-        title: '没有匹配内容',
-        message: '尝试修改搜索词。',
-        icon: Icons.search_off_rounded,
-      );
-    }
-
-    return ListView.separated(
-      padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
-      itemCount: results.length,
-      separatorBuilder: (_, _) => const SizedBox(height: 8),
-      itemBuilder: (context, index) {
-        final item = results[index];
-        return Material(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(16),
-          child: ListTile(
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(16),
-            ),
-            leading: CircleAvatar(
-              backgroundColor: item.background,
-              foregroundColor: item.color,
-              child: Icon(item.icon, size: 20),
-            ),
-            title: Text(
-              item.title,
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis,
-            ),
-            subtitle: Text(item.subtitle),
-            trailing: const Icon(Icons.chevron_right_rounded),
-            onTap: () => close(context, item.result),
-          ),
-        );
-      },
-    );
-  }
-}
-
-class _SearchListItem {
-  const _SearchListItem({
-    required this.title,
-    required this.subtitle,
-    required this.icon,
-    required this.color,
-    required this.background,
-    required this.result,
-  });
-
-  final String title;
-  final String subtitle;
-  final IconData icon;
-  final Color color;
-  final Color background;
-  final _KnowledgeBaseSearchResult result;
 }

@@ -77,6 +77,22 @@ class ApiClient {
     ),
   );
 
+  Future<Response<dynamic>> patch(
+    String path, {
+    Object? data,
+    Map<String, dynamic>? queryParameters,
+    Options? options,
+    CancelToken? cancelToken,
+  }) => _run(
+    () => _dio.patch(
+      path,
+      data: data,
+      queryParameters: queryParameters,
+      options: options,
+      cancelToken: cancelToken,
+    ),
+  );
+
   Future<Response<dynamic>> delete(String path) =>
       _run(() => _dio.delete(path));
 

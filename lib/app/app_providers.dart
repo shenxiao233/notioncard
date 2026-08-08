@@ -163,6 +163,32 @@ class AuthController extends StateNotifier<AsyncValue<AccountModel?>> {
     }
   }
 
+  Future<ProfileUpdateResult> updateProfile({
+    required String nickname,
+    String? avatar,
+    bool updateAvatar = false,
+  }) async {
+    if (_authRequestRunning) {
+      return const ProfileUpdateResult.failure(
+        AuthFailure(AuthFailureType.unknown),
+      );
+    }
+    _authRequestRunning = true;
+    try {
+      final result = await _repository.updateProfile(
+        nickname: nickname,
+        avatar: avatar,
+        updateAvatar: updateAvatar,
+      );
+      if (result.isSuccess) {
+        state = AsyncData(result.account);
+      }
+      return result;
+    } finally {
+      _authRequestRunning = false;
+    }
+  }
+
   Future<void> logout() async {
     await onSessionInvalidated?.call();
     await _repository.logout();
