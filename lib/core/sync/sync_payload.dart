@@ -3,6 +3,7 @@ import '../models/card_model.dart';
 Map<String, dynamic> cardSyncPayload(
   CardModel card, {
   bool progressReset = false,
+  bool progressOnly = false,
 }) {
   final payload = <String, dynamic>{
     'id': card.id,
@@ -30,5 +31,6 @@ Map<String, dynamic> cardSyncPayload(
     },
   };
   if (progressReset) payload['progressReset'] = true;
+  if (progressOnly) payload['syncMode'] = 'progress';
   return payload;
 }

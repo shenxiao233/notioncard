@@ -116,15 +116,7 @@ class SyncCoordinator {
             data: {
               'requests': [
                 for (final item in batch)
-                  {
-                    'objectType': item.objectType,
-                    'objectId': item.objectId,
-                    'objectVersion': _objectVersion(accountId, item),
-                    'operation': item.operation.name,
-                    if (item.operation == SyncOperation.upsert)
-                      'data': _decodePayload(item.payload),
-                    'deviceId': deviceId,
-                  },
+                  _syncRequestPayload(accountId, item, deviceId),
               ],
             },
             cancelToken: cancelToken,
@@ -766,6 +758,7 @@ class SyncCoordinator {
     }
 
     final progressReset = localPayload?['progressReset'] == true;
+    final progressOnly = localPayload?['syncMode'] == 'progress';
     final merged = _mergeCardProgress(
       local,
       remote,
@@ -783,7 +776,11 @@ class SyncCoordinator {
       objectVersion: serverVersion ?? 1,
       operation: SyncOperation.upsert,
       payload: jsonEncode(
-        cardSyncPayload(merged, progressReset: progressReset),
+        cardSyncPayload(
+          merged,
+          progressReset: progressReset,
+          progressOnly: progressOnly,
+        ),
       ),
       status: SyncItemStatus.pending,
       attempts: 0,
@@ -938,6 +935,60 @@ class SyncCoordinator {
 
   DateTime _date(Object? value) =>
       DateTime.tryParse(value?.toString() ?? '') ?? DateTime.now();
+
+  Map<String, dynamic> _syncRequestPayload(
+    String accountId,
+    SyncQueueItemModel item,
+    String deviceId,
+  ) {
+    final decoded = _stringMap(_decodePayload(item.payload));
+    final hasProgressMarker =
+        item.objectType == 'CARD' && decoded?['syncMode'] == 'progress';
+    final hasKnownServerVersion =
+        _version(
+          preferences?.getString(
+            _serverVersionKey(accountId, item.objectType, item.objectId),
+          ),
+        ) !=
+        null;
+    final sendProgress = hasProgressMarker && hasKnownServerVersion;
+
+    return {
+      'objectType': item.objectType,
+      'objectId': item.objectId,
+      'objectVersion': _objectVersion(accountId, item),
+      'operation': item.operation.name,
+      'deviceId': deviceId,
+      if (item.operation == SyncOperation.upsert)
+        'data': sendProgress
+            ? _progressPayload(decoded ?? const <String, dynamic>{})
+            : _withoutSyncControlFields(decoded ?? const <String, dynamic>{}),
+      if (sendProgress) 'metadata': const {'syncMode': 'progress'},
+    };
+  }
+
+  Map<String, dynamic> _progressPayload(Map<String, dynamic> payload) {
+    final result = <String, dynamic>{};
+    for (final key in const [
+      'id',
+      'dueAt',
+      'updatedAt',
+      'reviews',
+      'mastery',
+      'suspended',
+      'fsrs',
+      'progressReset',
+    ]) {
+      if (payload.containsKey(key)) result[key] = payload[key];
+    }
+    return result;
+  }
+
+  Map<String, dynamic> _withoutSyncControlFields(Map<String, dynamic> payload) {
+    final result = Map<String, dynamic>.from(payload);
+    result.remove('syncMode');
+    return result;
+  }
 
   dynamic _decodePayload(String payload) {
     try {

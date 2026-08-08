@@ -143,7 +143,11 @@ class ContentRepository {
           objectVersion: 1,
           operation: SyncOperation.upsert,
           payload: jsonEncode({
-            ...cardSyncPayload(card, progressReset: progressReset),
+            ...cardSyncPayload(
+              card,
+              progressReset: progressReset,
+              progressOnly: true,
+            ),
             'eventId': event.id,
             'lastRating': event.rating.name,
             'reviewedAt': event.reviewedAt.toIso8601String(),
@@ -273,7 +277,13 @@ class ContentRepository {
             objectId: reset.id,
             objectVersion: 1,
             operation: SyncOperation.upsert,
-            payload: jsonEncode(cardSyncPayload(reset, progressReset: true)),
+            payload: jsonEncode(
+              cardSyncPayload(
+                reset,
+                progressReset: true,
+                progressOnly: true,
+              ),
+            ),
             status: SyncItemStatus.pending,
             attempts: 0,
             lastError: null,
