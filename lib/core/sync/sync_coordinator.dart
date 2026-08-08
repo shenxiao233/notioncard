@@ -18,7 +18,7 @@ class SyncCoordinator {
   static const _supportedObjectTypes = {'DECK', 'DOCUMENT', 'CARD', 'SETTINGS'};
   static const _lastSyncKey = 'sync.last_sync';
   static const _fullSyncVersionKey = 'sync.full_sync_version';
-  static const _fullSyncVersion = '1';
+  static const _fullSyncVersion = '2';
   static const _batchSize = 100;
 
   final AppDatabase database;
@@ -246,29 +246,20 @@ class SyncCoordinator {
   }) async {
     final client = apiClient;
     if (client == null) return const FullSyncReport();
-    final lastSync = force
-        ? null
-        : preferences?.getString(_lastSyncKeyFor(accountId));
-    final queryParameters = <String, dynamic>{};
-    if (lastSync != null && lastSync.trim().isNotEmpty) {
-      queryParameters['lastSyncAt'] = lastSync;
-    }
-    final response = await client.get(
-      '/api/v2/sync/full',
-      queryParameters: queryParameters,
-      cancelToken: cancelToken,
-    );
-    final body = _stringMap(response.data);
-    final objects = body?['objects'];
-    if (body == null || (objects != null && objects is! List)) {
-      throw const ApiException(
-        statusCode: 502,
-        message: 'Invalid full sync response',
-      );
-    }
     var cards = 0;
     var documents = 0;
     var hasRemoteContent = false;
+    var hasMore = true;
+    var page = 0;
+    var opaqueCursorSeen = false;
+    final storedSync = preferences?.getString(_lastSyncKeyFor(accountId));
+    final storedVersion = preferences?.getString(
+      '$_fullSyncVersionKey.$accountId',
+    );
+    String? cursor = !force && storedVersion == _fullSyncVersion
+        ? storedSync
+        : null;
+    String? legacyLastSync = !force && cursor == null ? storedSync : null;
     final protectedObjectKeys = {
       for (final item in await database.loadPendingSync(accountId))
         _objectKey(item.objectType.trim().toUpperCase(), item.objectId),
@@ -278,95 +269,150 @@ class SyncCoordinator {
     Map<String, CardModel>? localCardsById;
     Map<String, DocumentModel>? localDocumentsById;
     final serverVersions = <String, int>{};
-    final remoteObjects = [
-      ...(objects as List? ?? const <Object?>[]),
-      ..._deletionObjects(body),
-    ];
-    for (final raw in remoteObjects.whereType<Map>()) {
-      final object = _stringMap(raw);
-      if (object == null) continue;
-      final objectId = _objectId(object);
-      final objectUpdatedAt = object['updatedAt'];
-      final objectType = _objectType(object);
-      if (objectId == null || objectType == null) continue;
-      final serverVersion = _version(object['objectVersion']);
-      if (serverVersion != null) {
-        serverVersions[_serverVersionKey(accountId, objectType, objectId)] =
-            serverVersion;
+    while (hasMore) {
+      page++;
+      if (page > 1000) {
+        throw const ApiException(
+          statusCode: 502,
+          message: 'Full sync returned too many pages',
+        );
       }
-      // Never let a pull overwrite a local mutation which is still waiting
-      // to be uploaded. A relearn reset is a deliberate local change even if
-      // the server still has a higher review count.
-      if (protectedObjectKeys.contains(_objectKey(objectType, objectId))) {
-        continue;
+      final queryParameters = <String, dynamic>{};
+      if (cursor != null && cursor.trim().isNotEmpty) {
+        queryParameters['cursor'] = cursor;
+      } else if (legacyLastSync != null && legacyLastSync.trim().isNotEmpty) {
+        queryParameters['lastSyncAt'] = legacyLastSync;
       }
-      if (_isRemoteDeletion(object)) {
-        cardsToSave.remove(objectId);
-        documentsToSave.remove(objectId);
-        await _removeRemoteObject(accountId, objectType, objectId, object);
-        continue;
+      final response = await client.get(
+        '/api/v2/sync/full',
+        queryParameters: queryParameters,
+        cancelToken: cancelToken,
+      );
+      final body = _stringMap(response.data);
+      final objects = body?['objects'];
+      if (body == null || (objects != null && objects is! List)) {
+        throw const ApiException(
+          statusCode: 502,
+          message: 'Invalid full sync response',
+        );
       }
-      final payload = _payloadMap(object['data']);
-      if (payload == null) continue;
-      switch (objectType) {
-        case 'CARD':
-          final card = _cardFromPayload(
-            accountId,
-            payload,
-            fallbackId: objectId,
-            fallbackUpdatedAt: objectUpdatedAt,
-          );
-          if (card.id.isEmpty) continue;
-          if (localCardsById == null) {
-            final localCards = await database.loadCards(accountId);
-            localCardsById = {for (final value in localCards) value.id: value};
-          }
-          final localCard = localCardsById[card.id];
-          final value = localCard == null
-              ? card
-              : _mergeCardProgress(localCard, card);
-          cardsToSave[value.id] = value;
-          localCardsById[value.id] = value;
-          cards++;
-          hasRemoteContent = true;
-        case 'DOCUMENT':
-          final document = _documentFromPayload(
-            accountId,
-            payload,
-            fallbackId: objectId,
-            fallbackUpdatedAt: objectUpdatedAt,
-          );
-          if (document.id.isEmpty) continue;
-          if (localDocumentsById == null) {
-            final localDocuments = await database.loadDocuments(accountId);
-            localDocumentsById = {
-              for (final value in localDocuments) value.id: value,
-            };
-          }
-          final localDocument = localDocumentsById[document.id];
-          final value = document.body.trim().isEmpty && localDocument != null
-              ? DocumentModel(
-                  id: document.id,
-                  accountId: document.accountId,
-                  folder: document.folder.isEmpty
-                      ? localDocument.folder
-                      : document.folder,
-                  title: document.title.isEmpty
-                      ? localDocument.title
-                      : document.title,
-                  body: localDocument.body,
-                  updatedAt: document.updatedAt,
-                )
-              : document;
-          documentsToSave[value.id] = value;
-          localDocumentsById[value.id] = value;
-          documents++;
-          hasRemoteContent = true;
+      final remoteObjects = [
+        ...(objects as List? ?? const <Object?>[]),
+        ..._deletionObjects(body),
+      ];
+      for (final raw in remoteObjects.whereType<Map>()) {
+        final object = _stringMap(raw);
+        if (object == null) continue;
+        final objectId = _objectId(object);
+        final objectUpdatedAt = object['updatedAt'];
+        final objectType = _objectType(object);
+        if (objectId == null || objectType == null) continue;
+        final serverVersion = _version(object['objectVersion']);
+        if (serverVersion != null) {
+          serverVersions[_serverVersionKey(accountId, objectType, objectId)] =
+              serverVersion;
+        }
+        // Never let a pull overwrite a local mutation which is still waiting
+        // to be uploaded. A relearn reset is a deliberate local change even if
+        // the server still has a higher review count.
+        if (protectedObjectKeys.contains(_objectKey(objectType, objectId))) {
+          continue;
+        }
+        if (_isRemoteDeletion(object)) {
+          cardsToSave.remove(objectId);
+          documentsToSave.remove(objectId);
+          await _removeRemoteObject(accountId, objectType, objectId, object);
+          continue;
+        }
+        final payload = _payloadMap(object['data']);
+        if (payload == null) continue;
+        switch (objectType) {
+          case 'CARD':
+            final card = _cardFromPayload(
+              accountId,
+              payload,
+              fallbackId: objectId,
+              fallbackUpdatedAt: objectUpdatedAt,
+            );
+            if (card.id.isEmpty) continue;
+            if (localCardsById == null) {
+              final localCards = await database.loadCards(accountId);
+              localCardsById = {
+                for (final value in localCards) value.id: value,
+              };
+            }
+            final localCard = localCardsById[card.id];
+            final value = localCard == null
+                ? card
+                : _mergeCardProgress(localCard, card);
+            cardsToSave[value.id] = value;
+            localCardsById[value.id] = value;
+            cards++;
+            hasRemoteContent = true;
+          case 'DOCUMENT':
+            final document = _documentFromPayload(
+              accountId,
+              payload,
+              fallbackId: objectId,
+              fallbackUpdatedAt: objectUpdatedAt,
+            );
+            if (document.id.isEmpty) continue;
+            if (localDocumentsById == null) {
+              final localDocuments = await database.loadDocuments(accountId);
+              localDocumentsById = {
+                for (final value in localDocuments) value.id: value,
+              };
+            }
+            final localDocument = localDocumentsById[document.id];
+            final value = document.body.trim().isEmpty && localDocument != null
+                ? DocumentModel(
+                    id: document.id,
+                    accountId: document.accountId,
+                    folder: document.folder.isEmpty
+                        ? localDocument.folder
+                        : document.folder,
+                    title: document.title.isEmpty
+                        ? localDocument.title
+                        : document.title,
+                    body: localDocument.body,
+                    updatedAt: document.updatedAt,
+                  )
+                : document;
+            documentsToSave[value.id] = value;
+            localDocumentsById[value.id] = value;
+            documents++;
+            hasRemoteContent = true;
+        }
       }
+      await database.saveCards(cardsToSave.values);
+      await database.saveDocuments(documentsToSave.values);
+      await _saveServerVersions(serverVersions);
+      cardsToSave.clear();
+      documentsToSave.clear();
+
+      final responseCursor = body['nextCursor']?.toString().trim();
+      final nextCursor = responseCursor == null || responseCursor.isEmpty
+          ? _syncCursor(body)
+          : responseCursor;
+      final pageHasMore = body['hasMore'] == true;
+      if (pageHasMore && (nextCursor.isEmpty || nextCursor == cursor)) {
+        throw const ApiException(
+          statusCode: 502,
+          message: 'Full sync cursor did not advance',
+        );
+      }
+      if (responseCursor == null || responseCursor.isEmpty) {
+        // Older servers only return a wall-clock syncTime. Keep using the
+        // legacy query until the server exposes an opaque high-water cursor.
+        cursor = null;
+        legacyLastSync = nextCursor;
+      } else {
+        opaqueCursorSeen = true;
+        cursor = nextCursor;
+        legacyLastSync = null;
+      }
+      hasMore = pageHasMore;
     }
-    await database.saveCards(cardsToSave.values);
-    await database.saveDocuments(documentsToSave.values);
-    await _saveServerVersions(serverVersions);
 
     if (force && hasRemoteContent) {
       await _removeSeedContent(
@@ -376,11 +422,13 @@ class SyncCoordinator {
         protectedObjectKeys: protectedObjectKeys,
       );
     }
-    final nextSync = _syncCursor(body);
-    await preferences?.setString(_lastSyncKeyFor(accountId), nextSync);
+    await preferences?.setString(
+      _lastSyncKeyFor(accountId),
+      cursor ?? legacyLastSync ?? DateTime.now().toUtc().toIso8601String(),
+    );
     await preferences?.setString(
       '$_fullSyncVersionKey.$accountId',
-      _fullSyncVersion,
+      opaqueCursorSeen ? _fullSyncVersion : '1',
     );
     return FullSyncReport(cards: cards, documents: documents);
   }
@@ -846,7 +894,12 @@ class SyncCoordinator {
   String _lastSyncKeyFor(String accountId) => '$_lastSyncKey.$accountId';
 
   String _syncCursor(Map<String, dynamic>? body) {
-    for (final key in const ['syncTime', 'nextSyncAt', 'lastSyncAt']) {
+    for (final key in const [
+      'nextCursor',
+      'syncTime',
+      'nextSyncAt',
+      'lastSyncAt',
+    ]) {
       final value = body?[key]?.toString().trim();
       if (value != null && value.isNotEmpty) return value;
     }
