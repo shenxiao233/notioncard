@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:dio/dio.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -66,6 +67,7 @@ class AuthRepository {
   static const _accountIdKey = 'auth.account_id';
   static const _accountKey = 'auth.account';
   static const tokenKey = 'auth.jwt';
+  static const refreshTokenKey = 'auth.refresh_token';
 
   AccountModel? get currentAccount {
     final raw = _preferences.getString(_accountKey);
@@ -184,6 +186,12 @@ class AuthRepository {
         );
       }
       await secureStorage.write(key: tokenKey, value: token);
+      final refreshToken = body['refreshToken']?.toString().trim();
+      if (refreshToken != null && refreshToken.isNotEmpty) {
+        await secureStorage.write(key: refreshTokenKey, value: refreshToken);
+      } else {
+        await secureStorage.delete(key: refreshTokenKey);
+      }
       await _saveAccount(account);
       return AuthResult.success(currentAccount ?? account);
     } on ApiException catch (error) {
@@ -267,18 +275,34 @@ class AuthRepository {
   }
 
   Future<void> logout() async {
+    final refreshToken = await secureStorage.read(key: refreshTokenKey);
+    if (refreshToken != null && refreshToken.isNotEmpty) {
+      try {
+        await apiClient?.post(
+          '/api/v2/auth/logout',
+          data: {'refreshToken': refreshToken},
+          options: Options(extra: {'skipAuth': true}),
+        );
+      } catch (_) {
+        // Local logout must still complete when the server is unavailable.
+      }
+    }
     await secureStorage.delete(key: tokenKey);
+    await secureStorage.delete(key: refreshTokenKey);
     await _preferences.remove(_accountIdKey);
     await _preferences.remove(_accountKey);
   }
 
   Future<void> clearSession() async {
     await secureStorage.delete(key: tokenKey);
+    await secureStorage.delete(key: refreshTokenKey);
     await _preferences.remove(_accountIdKey);
     await _preferences.remove(_accountKey);
   }
 
   Future<String?> token() => secureStorage.read(key: tokenKey);
+
+  Future<String?> refreshToken() => secureStorage.read(key: refreshTokenKey);
 
   Future<void> _saveAccount(AccountModel account) async {
     await _preferences.setString(_accountIdKey, account.id);

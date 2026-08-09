@@ -3,7 +3,7 @@ class ApiConfig {
 
   static const defaultBaseUrl = String.fromEnvironment(
     'KN_API_BASE_URL',
-    defaultValue: 'http://198.23.232.247',
+    defaultValue: 'https://shenxiao.mijiji.cc.cd:8443',
   );
 
   final String baseUrl;

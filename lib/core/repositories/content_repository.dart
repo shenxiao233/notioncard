@@ -1,4 +1,6 @@
 import 'dart:convert';
+import 'dart:developer' as developer;
+import 'dart:math';
 
 import '../database/app_database.dart';
 import '../models/card_model.dart';
@@ -9,6 +11,7 @@ class ContentRepository {
   ContentRepository(this.database);
 
   final AppDatabase database;
+  final Random _mutationRandom = Random.secure();
 
   Future<List<CardModel>> cards(String accountId) async {
     final values = await database.loadCards(accountId);
@@ -28,7 +31,7 @@ class ContentRepository {
       await database.saveCard(card);
       await database.enqueueSync(
         SyncQueueItemModel(
-          id: 'card-upsert-${card.id}',
+          id: _mutationId('card-upsert', card.id, now),
           accountId: card.accountId,
           objectType: 'CARD',
           objectId: card.id,
@@ -47,8 +50,11 @@ class ContentRepository {
 
   Future<CardImportResult> importCards(
     String accountId,
-    Iterable<CardModel> values,
-  ) async {
+    Iterable<CardModel> values, {
+    String? deckId,
+    String? deckTitle,
+    int? deckVersion,
+  }) async {
     final incoming = <CardModel>[];
     final incomingIds = <String>{};
     for (final card in values) {
@@ -74,7 +80,7 @@ class ContentRepository {
       await database.enqueueSyncItems(
         cards.map(
           (card) => SyncQueueItemModel(
-            id: 'card-upsert-${card.id}',
+            id: _mutationId('card-upsert', card.id, now),
             accountId: card.accountId,
             objectType: 'CARD',
             objectId: card.id,
@@ -89,6 +95,31 @@ class ContentRepository {
           ),
         ),
       );
+      if (deckId != null && deckId.trim().isNotEmpty) {
+        await database.enqueueSync(
+          SyncQueueItemModel(
+            id: _mutationId('deck-upsert', deckId, now),
+            accountId: accountId,
+            objectType: 'DECK',
+            objectId: deckId,
+            objectVersion: 1,
+            operation: SyncOperation.upsert,
+            payload: jsonEncode({
+              'id': deckId,
+              'title': deckTitle ?? '',
+              'folder': deckTitle ?? '',
+              'version': deckVersion,
+              'cardCount': cards.length,
+              'updatedAt': now.toIso8601String(),
+            }),
+            status: SyncItemStatus.pending,
+            attempts: 0,
+            lastError: null,
+            createdAt: now,
+            updatedAt: now,
+          ),
+        );
+      }
     });
     return CardImportResult(
       imported: cards.length,
@@ -103,7 +134,7 @@ class ContentRepository {
       await database.saveCard(card);
       await database.enqueueSync(
         SyncQueueItemModel(
-          id: 'card-upsert-${card.id}',
+          id: _mutationId('card-upsert', card.id, now),
           accountId: card.accountId,
           objectType: 'CARD',
           objectId: card.id,
@@ -126,6 +157,7 @@ class ContentRepository {
     required CardModel card,
     required ReviewEventModel event,
   }) async {
+    final now = event.reviewedAt;
     final progressReset = await _pendingProgressReset(card.accountId, card.id);
     await database.transaction(() async {
       await database.saveCard(card);
@@ -134,7 +166,7 @@ class ContentRepository {
         SyncQueueItemModel(
           // One pending snapshot per card is enough. The latest local FSRS
           // state supersedes older review snapshots until the next upload.
-          id: 'card-upsert-${card.id}',
+          id: _mutationId('card-upsert', card.id, now),
           accountId: event.accountId,
           objectType: 'CARD',
           objectId: card.id,
@@ -173,7 +205,7 @@ class ContentRepository {
       await database.deleteReviewEventsByCard(cardId, accountId);
       await database.enqueueSync(
         SyncQueueItemModel(
-          id: 'delete-card-$cardId-${now.microsecondsSinceEpoch}',
+          id: _mutationId('card-delete', cardId, now),
           accountId: accountId,
           objectType: 'CARD',
           objectId: cardId,
@@ -212,7 +244,7 @@ class ContentRepository {
         await database.deleteReviewEventsByCard(card.id, accountId);
         await database.enqueueSync(
           SyncQueueItemModel(
-            id: 'delete-card-${card.id}-${now.microsecondsSinceEpoch}',
+            id: _mutationId('card-delete', card.id, now),
             accountId: accountId,
             objectType: 'CARD',
             objectId: card.id,
@@ -235,13 +267,17 @@ class ContentRepository {
     required String accountId,
     required String folder,
   }) async {
+    final totalTimer = Stopwatch()..start();
+    final loadTimer = Stopwatch()..start();
     final normalizedFolder = folder.trim();
     final cards = (await database.loadCards(
       accountId,
     )).where((card) => card.folder.trim() == normalizedFolder).toList();
+    loadTimer.stop();
     if (cards.isEmpty) return 0;
 
     final now = DateTime.now();
+    final resetTimer = Stopwatch()..start();
     final resets = cards
         .map(
           (card) => card.copyWith(
@@ -260,6 +296,8 @@ class ContentRepository {
           ),
         )
         .toList();
+    resetTimer.stop();
+    final transactionTimer = Stopwatch()..start();
     await database.transaction(() async {
       await database.saveCards(resets);
       await database.deleteReviewEventsByCards(
@@ -271,18 +309,14 @@ class ContentRepository {
           (reset) => SyncQueueItemModel(
             // Relearn replaces any previous review/update snapshot for this
             // card instead of adding another upload task.
-            id: 'card-upsert-${reset.id}',
+            id: _mutationId('card-upsert', reset.id, now),
             accountId: accountId,
             objectType: 'CARD',
             objectId: reset.id,
             objectVersion: 1,
             operation: SyncOperation.upsert,
             payload: jsonEncode(
-              cardSyncPayload(
-                reset,
-                progressReset: true,
-                progressOnly: true,
-              ),
+              cardSyncPayload(reset, progressReset: true, progressOnly: true),
             ),
             status: SyncItemStatus.pending,
             attempts: 0,
@@ -293,6 +327,16 @@ class ContentRepository {
         ),
       );
     });
+    transactionTimer.stop();
+    totalTimer.stop();
+    developer.log(
+      'relearnDeck complete account=$accountId folder=$normalizedFolder '
+      'cards=${cards.length} loadMs=${loadTimer.elapsedMilliseconds} '
+      'resetMs=${resetTimer.elapsedMilliseconds} '
+      'transactionMs=${transactionTimer.elapsedMilliseconds} '
+      'totalMs=${totalTimer.elapsedMilliseconds}',
+      name: 'ContentRepository.relearnDeck',
+    );
     return cards.length;
   }
 
@@ -310,6 +354,9 @@ class ContentRepository {
       return false;
     }
   }
+
+  String _mutationId(String prefix, String objectId, DateTime at) =>
+      '$prefix-$objectId-${at.microsecondsSinceEpoch}-${_mutationRandom.nextInt(1 << 32)}';
 }
 
 class CardImportResult {

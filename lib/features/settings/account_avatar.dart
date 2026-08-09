@@ -1,7 +1,9 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
 
+import '../../core/cache/avatar_cache.dart';
 import '../../core/models/account_model.dart';
 import '../../core/network/api_config.dart';
 
@@ -34,7 +36,10 @@ class _AccountAvatarState extends State<AccountAvatar> {
     super.initState();
     final avatar = _normalizedAvatar(widget.account);
     _visibleAvatar = avatar;
-    _visibleImage = _avatarImage(avatar);
+    _visibleImage = _inlineAvatarImage(avatar);
+    if (avatar != null && _visibleImage == null) {
+      unawaited(_loadRemoteAvatar(avatar));
+    }
   }
 
   @override
@@ -51,8 +56,11 @@ class _AccountAvatarState extends State<AccountAvatar> {
         _visibleAvatar = null;
         _visibleImage = null;
         _pendingAvatar = avatar;
-        _pendingImage = _avatarImage(avatar);
+        _pendingImage = _inlineAvatarImage(avatar);
       });
+      if (avatar != null && _pendingImage == null) {
+        unawaited(_loadRemoteAvatar(avatar));
+      }
       return;
     }
 
@@ -71,10 +79,12 @@ class _AccountAvatarState extends State<AccountAvatar> {
     }
 
     _imageToken++;
+    final inlineImage = _inlineAvatarImage(avatar);
     setState(() {
       _pendingAvatar = avatar;
-      _pendingImage = _avatarImage(avatar);
+      _pendingImage = inlineImage;
     });
+    if (inlineImage == null) unawaited(_loadRemoteAvatar(avatar));
   }
 
   @override
@@ -182,7 +192,7 @@ class _AccountAvatarState extends State<AccountAvatar> {
     ),
   );
 
-  ImageProvider<Object>? _avatarImage(String? source) {
+  ImageProvider<Object>? _inlineAvatarImage(String? source) {
     if (source == null || source.isEmpty) return null;
     if (source.startsWith('data:image/')) {
       final comma = source.indexOf(',');
@@ -193,14 +203,36 @@ class _AccountAvatarState extends State<AccountAvatar> {
         return null;
       }
     }
+    return null;
+  }
+
+  Future<void> _loadRemoteAvatar(String source) async {
+    final generation = _imageGeneration;
+    final resolved = _resolvedAvatarUrl(source);
+    if (resolved == null) return;
+
+    final bytes = await loadOrFetchAvatar(resolved);
+    final ImageProvider<Object> image = bytes == null || bytes.isEmpty
+        ? NetworkImage(resolved)
+        : MemoryImage(bytes);
+    if (!mounted || generation != _imageGeneration) return;
+    if (_pendingAvatar != source && _visibleAvatar != source) return;
+
+    setState(() {
+      _pendingAvatar = source;
+      _pendingImage = image;
+    });
+  }
+
+  String? _resolvedAvatarUrl(String source) {
     final uri = Uri.tryParse(source);
     if (uri == null) return null;
     if (uri.hasScheme && (uri.scheme == 'http' || uri.scheme == 'https')) {
-      return NetworkImage(uri.toString());
+      return uri.toString();
     }
     final base = Uri.tryParse(ApiConfig.defaultBaseUrl);
     final resolved = base?.resolve(source);
-    return resolved == null ? null : NetworkImage(resolved.toString());
+    return resolved?.toString();
   }
 
   String _initial(AccountModel value) {

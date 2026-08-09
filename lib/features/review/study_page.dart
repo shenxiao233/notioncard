@@ -157,7 +157,7 @@ class _StudyPageState extends ConsumerState<StudyPage> {
       ),
       _ => snapshot == null ? generatedQueueIds : savedQueueIds,
     };
-    _queueIds = _activeQueueIds(queueIds, cardsById);
+    _queueIds = _orderedActiveQueueIds(queueIds, cardsById);
     _sessionAutonomousLearning = autonomousLearning;
     final completedIds = {
       ...?snapshot?.completedIds,
@@ -183,7 +183,7 @@ class _StudyPageState extends ConsumerState<StudyPage> {
         : modeChanged
         ? generatedQueueIds
         : currentQueueIds;
-    final activeQueueIds = _activeQueueIds(desiredQueueIds, cardsById);
+    final activeQueueIds = _orderedActiveQueueIds(desiredQueueIds, cardsById);
     final changed =
         activeQueueIds.length != currentQueueIds.length ||
         activeQueueIds.asMap().entries.any(
@@ -223,6 +223,20 @@ class _StudyPageState extends ConsumerState<StudyPage> {
           (widget.selectedFolder == null ||
               card.folder.trim() == widget.selectedFolder!.trim());
     }).toList();
+  }
+
+  List<String> _orderedActiveQueueIds(
+    List<String> queueIds,
+    Map<String, CardModel> cardsById,
+  ) {
+    final active = _activeQueueIds(queueIds, cardsById);
+    active.sort((left, right) {
+      final leftCard = cardsById[left];
+      final rightCard = cardsById[right];
+      if (leftCard == null || rightCard == null) return 0;
+      return compareReviewCardOrder(leftCard, rightCard);
+    });
+    return active;
   }
 
   Set<String> _completedIdsFromEvents(

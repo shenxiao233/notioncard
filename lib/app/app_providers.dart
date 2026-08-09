@@ -44,6 +44,14 @@ final apiClientProvider = Provider<ApiClient>((ref) {
   return ApiClient(
     config: ref.watch(apiConfigProvider),
     tokenReader: () => storage.read(key: AuthRepository.tokenKey),
+    refreshTokenReader: () => storage.read(key: AuthRepository.refreshTokenKey),
+    onTokensRefreshed: (accessToken, refreshToken) async {
+      await storage.write(key: AuthRepository.tokenKey, value: accessToken);
+      await storage.write(
+        key: AuthRepository.refreshTokenKey,
+        value: refreshToken,
+      );
+    },
     onUnauthorized: () async => ref.read(sessionEventsProvider).invalidate(),
   );
 });
@@ -215,6 +223,11 @@ final Provider<AccountModel?> currentAccountProvider = Provider<AccountModel?>((
   return ref.watch(authControllerProvider).valueOrNull;
 });
 
+// Recreate account-scoped settings after a remote SETTINGS object is applied.
+// Keeping this revision in the app layer avoids a dependency cycle between
+// the sync coordinator and the review settings provider.
+final remoteSettingsRevisionProvider = StateProvider<int>((ref) => 0);
+
 final StateNotifierProvider<SyncController, SyncUiState>
 syncControllerProvider = StateNotifierProvider<SyncController, SyncUiState>((
   ref,
@@ -227,6 +240,7 @@ syncControllerProvider = StateNotifierProvider<SyncController, SyncUiState>((
       ref.invalidate(cardsProvider);
       ref.invalidate(documentsProvider);
       ref.invalidate(reviewEventsProvider);
+      ref.read(remoteSettingsRevisionProvider.notifier).state++;
     },
   );
 });

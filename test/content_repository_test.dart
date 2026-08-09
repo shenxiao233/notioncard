@@ -86,6 +86,47 @@ void main() {
   );
 
   test(
+    'relearnDeck coalesces a large deck without duplicating queue rows',
+    () async {
+      final now = DateTime(2026, 8, 1);
+      final cards = List.generate(
+        1210,
+        (index) => _buildLargeDeckCard(index, now),
+      );
+      await database.saveCards(cards);
+      await database.enqueueSyncItems(
+        cards.map(
+          (card) => SyncQueueItemModel(
+            id: 'old-${card.id}',
+            accountId: card.accountId,
+            objectType: 'CARD',
+            objectId: card.id,
+            operation: SyncOperation.upsert,
+            payload: '{}',
+            status: SyncItemStatus.pending,
+            attempts: 0,
+            lastError: null,
+            createdAt: now,
+            updatedAt: now,
+          ),
+        ),
+      );
+
+      final count = await ContentRepository(
+        database,
+      ).relearnDeck(accountId: 'account-1', folder: 'large-deck');
+
+      expect(count, 1210);
+      final pending = await database.loadPendingSync('account-1');
+      expect(pending, hasLength(1210));
+      expect(
+        pending.every((item) => item.id.startsWith('card-upsert-')),
+        isTrue,
+      );
+    },
+  );
+
+  test(
     'coalesces multiple reviews of one card into one pending snapshot',
     () async {
       final now = DateTime(2026, 8, 1);
@@ -109,7 +150,7 @@ void main() {
       final payload =
           jsonDecode(pending.single.payload) as Map<String, dynamic>;
       expect(pending, hasLength(1));
-      expect(pending.single.id, 'card-upsert-${card.id}');
+      expect(pending.single.id, startsWith('card-upsert-${card.id}-'));
       expect(payload['reviews'], 2);
       expect(payload['eventId'], 'event-2');
     },
@@ -292,6 +333,36 @@ CardModel _buildImportCard(String id, String question) {
       stability: 0,
       difficulty: 5,
       reps: 0,
+      lapses: 0,
+    ),
+  );
+}
+
+CardModel _buildLargeDeckCard(int index, DateTime now) {
+  final timestamp = now.add(Duration(microseconds: index));
+  return CardModel(
+    id: 'large-card-$index',
+    accountId: 'account-1',
+    type: CardType.note,
+    folder: 'large-deck',
+    question: 'Question $index',
+    options: const {},
+    answer: const [],
+    noteContent: '',
+    explanation: '',
+    tags: const [],
+    dueAt: timestamp,
+    createdAt: timestamp,
+    updatedAt: timestamp,
+    reviews: 2,
+    mastery: 'familiar',
+    suspended: false,
+    fsrs: FsrsSnapshot(
+      state: FsrsState.review,
+      dueAt: timestamp,
+      stability: 2,
+      difficulty: 5,
+      reps: 2,
       lapses: 0,
     ),
   );

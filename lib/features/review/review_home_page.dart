@@ -260,6 +260,7 @@ class _ReviewHomePageState extends ConsumerState<ReviewHomePage> {
         ref.read(sharedPreferencesProvider),
         _selectedFolderAccountId,
         normalized,
+        database: ref.read(appDatabaseProvider),
       ),
     );
   }

@@ -667,13 +667,10 @@ class _SyncGroup extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final offline = sync.connection == SyncConnectionState.offline;
-    final failure = sync.phase == SyncPhase.failure;
     final statusLabel = offline
         ? '离线'
         : sync.isBusy
         ? '同步中'
-        : failure
-        ? '需重试'
         : '在线';
     return _SettingsGroup(
       dividerIndent: 16,
@@ -681,10 +678,7 @@ class _SyncGroup extends StatelessWidget {
         _SettingsRow(
           title: '连接状态',
           subtitle: _syncDescription(sync, pending),
-          trailing: _StatusBadge(
-            label: statusLabel,
-            warning: offline || failure,
-          ),
+          trailing: _StatusBadge(label: statusLabel, warning: offline),
         ),
         _SettingsRow(
           title: '待同步项目',

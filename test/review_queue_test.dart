@@ -1,6 +1,8 @@
+import 'package:drift/native.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'package:kncard_app/core/database/app_database.dart';
 import 'package:kncard_app/core/models/card_model.dart';
 import 'package:kncard_app/features/review/review_queue.dart';
 import 'package:kncard_app/features/review/review_settings.dart';
@@ -56,6 +58,36 @@ void main() {
     ]);
   });
 
+  test('review queue keeps a stable imported sequence', () {
+    final base = DateTime(2026, 1, 1);
+    final cards = [
+      _card(
+        'card-3',
+        FsrsState.newCard,
+        createdAt: base.add(const Duration(microseconds: 3)),
+      ),
+      _card(
+        'card-1',
+        FsrsState.newCard,
+        createdAt: base.add(const Duration(microseconds: 1)),
+      ),
+      _card(
+        'card-2',
+        FsrsState.newCard,
+        createdAt: base.add(const Duration(microseconds: 2)),
+      ),
+    ];
+
+    final queue = buildReviewQueue(
+      cards: cards,
+      settings: const ReviewSettings(autonomousLearning: true),
+      folder: null,
+      now: base.add(const Duration(seconds: 1)),
+    );
+
+    expect(queue.map((card) => card.id), ['card-1', 'card-2', 'card-3']);
+  });
+
   test('autonomous learning includes all due new and scheduled cards', () {
     final cards = [
       _card('new-1', FsrsState.newCard),
@@ -103,6 +135,33 @@ void main() {
     expect(other.state.newCardsPerDay, 20);
     expect(other.state.reviewsPerDay, 100);
     expect(other.state.autonomousLearning, isFalse);
+  });
+
+  test('review settings and selected folder share one sync snapshot', () async {
+    final database = AppDatabase(NativeDatabase.memory());
+    addTearDown(database.close);
+    SharedPreferences.setMockInitialValues({});
+    final preferences = await SharedPreferences.getInstance();
+    final settings = ReviewSettingsController(
+      preferences,
+      'account-a',
+      database,
+    );
+
+    await settings.setNewCardsPerDay(7);
+    await saveSelectedReviewFolder(
+      preferences,
+      'account-a',
+      '英语',
+      database: database,
+    );
+
+    final pending = await database.loadPendingSync('account-a');
+    expect(pending, hasLength(1));
+    expect(pending.single.objectType, 'SETTINGS');
+    expect(pending.single.objectId, 'review');
+    expect(pending.single.payload, contains('"newCardsPerDay":7'));
+    expect(pending.single.payload, contains('"selectedFolder":"英语"'));
   });
 
   test('review settings tolerate legacy preference values', () async {

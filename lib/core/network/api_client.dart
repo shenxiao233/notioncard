@@ -4,12 +4,19 @@ import 'api_config.dart';
 import 'api_exception.dart';
 
 typedef TokenReader = Future<String?> Function();
+typedef RefreshTokenReader = Future<String?> Function();
+typedef TokenPairWriter =
+    Future<void> Function(String accessToken, String refreshToken);
 typedef UnauthorizedHandler = Future<void> Function();
+
+enum RefreshOutcome { refreshed, invalid, unavailable }
 
 class ApiClient {
   ApiClient({
     required ApiConfig config,
     required this.tokenReader,
+    this.refreshTokenReader,
+    this.onTokensRefreshed,
     this.onUnauthorized,
     Dio? dio,
   }) : _dio = dio ?? Dio() {
@@ -34,8 +41,34 @@ class ApiClient {
         },
         onError: (error, handler) async {
           final skipAuth = error.requestOptions.extra['skipAuth'] == true;
-          if (!skipAuth && error.response?.statusCode == 401) {
-            await onUnauthorized?.call();
+          final alreadyRetried =
+              error.requestOptions.extra['authRetry'] == true;
+          if (!skipAuth &&
+              !alreadyRetried &&
+              error.response?.statusCode == 401) {
+            final outcome = await _refreshSingleFlight();
+            if (outcome == RefreshOutcome.refreshed) {
+              try {
+                error.requestOptions.extra['authRetry'] = true;
+                final token = await tokenReader();
+                if (token != null && token.isNotEmpty) {
+                  error.requestOptions.headers['Authorization'] =
+                      'Bearer $token';
+                }
+                final response = await _dio.fetch(error.requestOptions);
+                handler.resolve(response);
+                return;
+              } on DioException catch (retryError) {
+                handler.next(retryError);
+                return;
+              } catch (_) {
+                handler.next(error);
+                return;
+              }
+            }
+            if (outcome == RefreshOutcome.invalid) {
+              await onUnauthorized?.call();
+            }
           }
           handler.next(error);
         },
@@ -45,7 +78,61 @@ class ApiClient {
 
   final Dio _dio;
   final TokenReader tokenReader;
+  final RefreshTokenReader? refreshTokenReader;
+  final TokenPairWriter? onTokensRefreshed;
   final UnauthorizedHandler? onUnauthorized;
+  Future<RefreshOutcome>? _refreshInFlight;
+
+  Future<RefreshOutcome> _refreshSingleFlight() async {
+    final active = _refreshInFlight;
+    if (active != null) return active;
+
+    final task = _refreshAccessToken();
+    _refreshInFlight = task;
+    try {
+      return await task;
+    } finally {
+      if (identical(_refreshInFlight, task)) _refreshInFlight = null;
+    }
+  }
+
+  Future<RefreshOutcome> _refreshAccessToken() async {
+    final reader = refreshTokenReader;
+    final writer = onTokensRefreshed;
+    if (reader == null || writer == null) return RefreshOutcome.invalid;
+
+    final refreshToken = await reader();
+    if (refreshToken == null || refreshToken.isEmpty) {
+      return RefreshOutcome.invalid;
+    }
+
+    try {
+      final response = await _dio.post(
+        '/api/v2/auth/refresh',
+        data: {'refreshToken': refreshToken},
+        options: Options(extra: {'skipAuth': true, 'refreshRequest': true}),
+      );
+      final body = response.data;
+      if (body is! Map) return RefreshOutcome.invalid;
+      final accessToken = body['token']?.toString().trim();
+      final replacement = body['refreshToken']?.toString().trim();
+      if (accessToken == null ||
+          accessToken.isEmpty ||
+          replacement == null ||
+          replacement.isEmpty) {
+        return RefreshOutcome.invalid;
+      }
+      await writer(accessToken, replacement);
+      return RefreshOutcome.refreshed;
+    } on DioException catch (error) {
+      if (error.response?.statusCode == 401) {
+        return RefreshOutcome.invalid;
+      }
+      return RefreshOutcome.unavailable;
+    } catch (_) {
+      return RefreshOutcome.unavailable;
+    }
+  }
 
   Future<Response<dynamic>> get(
     String path, {

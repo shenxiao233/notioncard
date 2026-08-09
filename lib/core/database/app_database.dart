@@ -90,7 +90,7 @@ class AppDatabase extends _$AppDatabase {
       );
 
   @override
-  int get schemaVersion => 4;
+  int get schemaVersion => 5;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -105,6 +105,7 @@ class AppDatabase extends _$AppDatabase {
         await m.addColumn(syncQueue, syncQueue.objectVersion);
       }
       if (from < 4) await _createIndexes();
+      if (from < 5) await _createIndexes();
     },
   );
 
@@ -112,6 +113,10 @@ class AppDatabase extends _$AppDatabase {
     await customStatement(
       'CREATE INDEX IF NOT EXISTS idx_cards_account_due '
       'ON cards (account_id, due_at)',
+    );
+    await customStatement(
+      'CREATE INDEX IF NOT EXISTS idx_cards_account_due_order '
+      'ON cards (account_id, due_at, created_at, id)',
     );
     await customStatement(
       'CREATE INDEX IF NOT EXISTS idx_documents_account_updated '
@@ -131,7 +136,11 @@ class AppDatabase extends _$AppDatabase {
     final rows =
         await (select(cards)
               ..where((row) => row.accountId.equals(accountId))
-              ..orderBy([(row) => OrderingTerm(expression: row.dueAt)]))
+              ..orderBy([
+                (row) => OrderingTerm(expression: row.dueAt),
+                (row) => OrderingTerm(expression: row.createdAt),
+                (row) => OrderingTerm(expression: row.id),
+              ]))
             .get();
     return rows.map(_cardFromRow).toList();
   }
@@ -397,26 +406,39 @@ class AppDatabase extends _$AppDatabase {
     return row.read<int>('pending_count');
   }
 
-  Future<void> enqueueSync(SyncQueueItemModel value) =>
-      into(syncQueue).insertOnConflictUpdate(
-        SyncQueueCompanion.insert(
-          id: value.id,
-          accountId: value.accountId,
-          objectType: value.objectType,
-          objectId: value.objectId,
-          objectVersion: Value(value.objectVersion),
-          operation: value.operation.name,
-          payloadJson: value.payload,
-          status: value.status.name,
-          attempts: Value(value.attempts),
-          lastError: Value(value.lastError),
-          createdAt: value.createdAt,
-          updatedAt: value.updatedAt,
-        ),
-      );
+  Future<void> enqueueSync(SyncQueueItemModel value) async {
+    // Keep only the newest unsent snapshot for an object. The queue row ID is
+    // also its mutationId, so replacing the row creates a new idempotent
+    // mutation while preventing review sessions from building an unbounded
+    // backlog of obsolete progress states.
+    await (delete(syncQueue)..where(
+          (row) =>
+              row.accountId.equals(value.accountId) &
+              row.objectType.equals(value.objectType) &
+              row.objectId.equals(value.objectId),
+        ))
+        .go();
+    await into(syncQueue).insert(
+      SyncQueueCompanion.insert(
+        id: value.id,
+        accountId: value.accountId,
+        objectType: value.objectType,
+        objectId: value.objectId,
+        objectVersion: Value(value.objectVersion),
+        operation: value.operation.name,
+        payloadJson: value.payload,
+        status: value.status.name,
+        attempts: Value(value.attempts),
+        lastError: Value(value.lastError),
+        createdAt: value.createdAt,
+        updatedAt: value.updatedAt,
+      ),
+    );
+  }
 
   Future<void> enqueueSyncItems(Iterable<SyncQueueItemModel> values) async {
-    final companions = values
+    final items = values.toList();
+    final companions = items
         .map(
           (value) => SyncQueueCompanion.insert(
             id: value.id,
@@ -435,6 +457,34 @@ class AppDatabase extends _$AppDatabase {
         )
         .toList();
     if (companions.isEmpty) return;
+
+    // A mutation queue stores only the newest snapshot for each object. The
+    // old implementation deleted one row at a time, which made a 1,210-card
+    // relearn execute 1,210 SQLite statements before it could insert the new
+    // snapshots. Group the deletes by account/type and chunk the IN clause so
+    // this remains below SQLite's bound-variable limit on Android.
+    final objectIdsByScope = <String, Map<String, Set<String>>>{};
+    for (final value in items) {
+      objectIdsByScope
+          .putIfAbsent(value.accountId, () => <String, Set<String>>{})
+          .putIfAbsent(value.objectType, () => <String>{})
+          .add(value.objectId);
+    }
+    for (final accountEntry in objectIdsByScope.entries) {
+      for (final typeEntry in accountEntry.value.entries) {
+        final ids = typeEntry.value.toList(growable: false);
+        for (var offset = 0; offset < ids.length; offset += 400) {
+          final chunk = ids.skip(offset).take(400).toSet();
+          await (delete(syncQueue)..where(
+                (row) =>
+                    row.accountId.equals(accountEntry.key) &
+                    row.objectType.equals(typeEntry.key) &
+                    row.objectId.isIn(chunk),
+              ))
+              .go();
+        }
+      }
+    }
     await batch((batch) {
       batch.insertAllOnConflictUpdate(syncQueue, companions);
     });
@@ -499,10 +549,10 @@ class AppDatabase extends _$AppDatabase {
   }
 
   Future<void> markSyncSynced(String id, String accountId) =>
-      (update(syncQueue)..where(
+      (delete(syncQueue)..where(
             (value) => value.id.equals(id) & value.accountId.equals(accountId),
           ))
-          .write(const SyncQueueCompanion(status: Value('synced')));
+          .go();
 
   Future<void> markSyncItemsSynced(
     String accountId,
@@ -510,9 +560,9 @@ class AppDatabase extends _$AppDatabase {
   ) async {
     final ids = itemIds.where((id) => id.isNotEmpty).toSet();
     if (ids.isEmpty) return;
-    await (update(syncQueue)
-          ..where((row) => row.accountId.equals(accountId) & row.id.isIn(ids)))
-        .write(const SyncQueueCompanion(status: Value('synced')));
+    await (delete(
+      syncQueue,
+    )..where((row) => row.accountId.equals(accountId) & row.id.isIn(ids))).go();
   }
 
   Future<void> markPendingSyncObjectsSynced(
@@ -521,10 +571,10 @@ class AppDatabase extends _$AppDatabase {
   ) async {
     final ids = objectIds.where((id) => id.isNotEmpty).toSet();
     if (ids.isEmpty) return;
-    await (update(syncQueue)..where(
+    await (delete(syncQueue)..where(
           (row) => row.accountId.equals(accountId) & row.objectId.isIn(ids),
         ))
-        .write(const SyncQueueCompanion(status: Value('synced')));
+        .go();
   }
 
   SyncQueueItemModel _syncFromRow(SyncQueueData row) => SyncQueueItemModel(

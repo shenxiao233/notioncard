@@ -1,0 +1,80 @@
+name: Test VPS SSH
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_host:
+        description: VPS IPv4 address or hostname
+        required: true
+        default: 198.23.232.247
+      target_user:
+        description: SSH username
+        required: true
+        default: root
+      target_port:
+        description: SSH port
+        required: true
+        default: "22"
+      run_command:
+        description: Command to run after login
+        required: true
+        default: "hostname && whoami && uptime"
+
+jobs:
+  ssh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      TARGET_HOST: ${{ inputs.target_host }}
+      TARGET_USER: ${{ inputs.target_user }}
+      TARGET_PORT: ${{ inputs.target_port }}
+      RUN_COMMAND: ${{ inputs.run_command }}
+    steps:
+      - name: Check TCP port
+        shell: bash
+        run: |
+          set -eu
+          timeout 15 bash -c "</dev/tcp/${TARGET_HOST}/${TARGET_PORT}" \
+            && echo "TCP port ${TARGET_PORT} is reachable" \
+            || { echo "TCP port ${TARGET_PORT} is not reachable"; exit 1; }
+
+      - name: Check SSH banner
+        shell: bash
+        run: |
+          set -eu
+          banner="$(timeout 15 bash -c "exec 3<>/dev/tcp/${TARGET_HOST}/${TARGET_PORT}; IFS= read -r line <&3; printf '%s' \"\$line\"" || true)"
+          if [[ -n "${banner}" ]]; then
+            echo "SSH banner: ${banner}"
+          else
+            echo "The TCP port opened, but no SSH banner was received."
+            exit 1
+          fi
+
+      - name: Prepare SSH key
+        shell: bash
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
+        run: |
+          set -eu
+          test -n "${SSH_PRIVATE_KEY}" || { echo "Missing VPS_SSH_PRIVATE_KEY secret"; exit 1; }
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "${SSH_PRIVATE_KEY}" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+
+      - name: Connect and run command
+        shell: bash
+        run: |
+          set -eu
+          ssh -4 \
+            -i ~/.ssh/vps_key \
+            -p "${TARGET_PORT}" \
+            -o BatchMode=yes \
+            -o ConnectTimeout=15 \
+            -o StrictHostKeyChecking=accept-new \
+            "${TARGET_USER}@${TARGET_HOST}" \
+            "${RUN_COMMAND}"
+
+      - name: Remove private key
+        if: always()
+        shell: bash
+        run: rm -f ~/.ssh/vps_key

@@ -406,7 +406,10 @@ class MarketRepository {
       explanation: explanation,
       tags: tags,
       dueAt: now,
-      createdAt: now,
+      // Preserve the order in cards.json. Imported cards previously shared
+      // one timestamp, so the review queue had to fall back to card IDs and
+      // could no longer follow the deck's original sequence.
+      createdAt: now.add(Duration(microseconds: index)),
       updatedAt: now,
       reviews: 0,
       mastery: '',

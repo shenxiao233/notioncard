@@ -12,7 +12,7 @@ List<CardModel> buildReviewQueue({
     return !card.suspended &&
         !card.dueAt.isAfter(currentTime) &&
         (folder == null || card.folder.trim() == folder.trim());
-  }).toList()..sort(_compareCardOrder);
+  }).toList()..sort(compareReviewCardOrder);
 
   final queue = <CardModel>[];
   var newCards = 0;
@@ -33,7 +33,7 @@ List<CardModel> buildReviewQueue({
   return queue;
 }
 
-int _compareCardOrder(CardModel left, CardModel right) {
+int compareReviewCardOrder(CardModel left, CardModel right) {
   final created = left.createdAt.compareTo(right.createdAt);
   if (created != 0) return created;
   return left.id.compareTo(right.id);

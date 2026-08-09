@@ -271,7 +271,13 @@ class _DeckDetailsState extends ConsumerState<_DeckDetails> {
       });
       final result = await ref
           .read(contentRepositoryProvider)
-          .importCards(account.id, package.cards);
+          .importCards(
+            account.id,
+            package.cards,
+            deckId: package.deckId,
+            deckTitle: package.title,
+            deckVersion: package.version,
+          );
       ref.invalidate(cardsProvider);
       ref.invalidate(pendingSyncProvider);
       if (!mounted) return;
