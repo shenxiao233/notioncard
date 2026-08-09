@@ -103,6 +103,60 @@ void main() {
     expect(report.failed, 0);
   });
 
+  test('keeps the server message for an item-level batch error', () async {
+    final adapter = _QueueAdapter([
+      _FakeResponse.json({
+        'responses': [],
+        'errors': [
+          {
+            'objectType': 'CARD',
+            'objectId': 'card-1',
+            'message': 'Card payload rejected by server',
+          },
+        ],
+      }),
+    ]);
+    final coordinator = _buildCoordinator(database, preferences, adapter);
+    await database.enqueueSync(
+      _buildQueueItem('mutation-card-1-0001', DateTime(2026, 8, 2)),
+    );
+
+    final report = await coordinator.sync('account-1');
+    final failed = (await database.loadPendingSync('account-1')).single;
+
+    expect(report.synced, 0);
+    expect(report.failed, 1);
+    expect(failed.status, SyncItemStatus.failed);
+    expect(failed.lastError, 'Card payload rejected by server');
+  });
+
+  test('splits pending mutations at the server batch limit', () async {
+    final adapter = _QueueAdapter([
+      _FakeResponse.json({'responses': []}),
+      _FakeResponse.json({'responses': []}),
+    ]);
+    final coordinator = _buildCoordinator(database, preferences, adapter);
+    final now = DateTime(2026, 8, 2);
+    for (var index = 0; index < 51; index++) {
+      await database.enqueueSync(
+        _buildQueueItem('queue-$index', now, objectId: 'card-$index'),
+      );
+    }
+
+    final report = await coordinator.sync('account-1');
+
+    expect(report.failed, 51);
+    expect(adapter.requests, hasLength(2));
+    expect(
+      ((adapter.requests[0].data as Map)['requests'] as List),
+      hasLength(50),
+    );
+    expect(
+      ((adapter.requests[1].data as Map)['requests'] as List),
+      hasLength(1),
+    );
+  });
+
   test(
     'pushPending only uploads local changes without a pull request',
     () async {
@@ -302,7 +356,7 @@ void main() {
     },
   );
 
-  test('uses the saved cursor for subsequent incremental pulls', () async {
+  test('uses the saved watermark for subsequent incremental pulls', () async {
     final adapter = _QueueAdapter([
       _FakeResponse.json({
         'syncTime': '2026-08-02T00:00:00.000Z',
@@ -318,7 +372,10 @@ void main() {
     expect(coordinator.needsInitialFullSync('account-1'), isTrue);
     await coordinator.fullSync('account-1');
     expect(coordinator.needsInitialFullSync('account-1'), isFalse);
-    expect(adapter.requests.single.queryParameters, isEmpty);
+    expect(
+      adapter.requests.single.queryParameters['limit'],
+      500,
+    );
 
     await coordinator.fullSync('account-1');
     expect(
@@ -326,6 +383,45 @@ void main() {
       '2026-08-02T00:00:00.000Z',
     );
   });
+
+  test(
+    'does not persist an opaque pagination cursor as the next watermark',
+    () async {
+      final adapter = _QueueAdapter([
+        _FakeResponse.json({
+          'highWaterAt': '2026-08-02T00:00:00.000Z',
+          'nextCursor': 'opaque-page-1',
+          'objects': [],
+        }),
+        _FakeResponse.json({}), // high-water checkpoint
+        _FakeResponse.json({
+          'highWaterAt': '2026-08-03T00:00:00.000Z',
+          'nextCursor': 'opaque-page-2',
+          'objects': [],
+        }),
+        _FakeResponse.json({}), // high-water checkpoint
+      ]);
+      final coordinator = _buildCoordinator(database, preferences, adapter);
+
+      await coordinator.fullSync('account-1');
+      expect(
+        preferences.getString('sync.last_sync.account-1'),
+        '2026-08-02T00:00:00.000Z',
+      );
+      expect(preferences.getString('sync.full_sync_version.account-1'), '3');
+
+      await coordinator.fullSync('account-1');
+      final fullPulls = adapter.requests
+          .where((request) => request.path == '/api/v2/sync/full')
+          .toList();
+      expect(fullPulls, hasLength(2));
+      expect(
+        fullPulls[1].queryParameters['lastSyncAt'],
+        '2026-08-02T00:00:00.000Z',
+      );
+      expect(fullPulls[1].queryParameters['cursor'], isNull);
+    },
+  );
   test(
     'unwraps nested document data and preserves local body when remote body is empty',
     () async {

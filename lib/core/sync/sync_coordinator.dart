@@ -1,5 +1,7 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
+import 'dart:developer' as developer;
 
 import 'package:dio/dio.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -18,12 +20,29 @@ class SyncCoordinator {
   static const _supportedObjectTypes = {'DECK', 'DOCUMENT', 'CARD', 'SETTINGS'};
   static const _lastSyncKey = 'sync.last_sync';
   static const _fullSyncVersionKey = 'sync.full_sync_version';
-  static const _fullSyncVersion = '2';
-  static const _batchSize = 100;
+  // The saved value is a completed high-water timestamp, never an in-flight
+  // pagination cursor. Version 2 stored the opaque cursor itself and must be
+  // invalidated once so it cannot hide changes made after that cursor.
+  static const _fullSyncVersion = '3';
+  // Keep these in lockstep with the server's SYNC_BATCH_MAX. Only mutations
+  // that are known to be progress-only are sent in the larger batch; a first
+  // upload may still contain the complete card body and must stay smaller.
+  static const _fullBatchSize = 50;
+  static const _progressBatchSize = 200;
+  // The server supports up to 500 objects per pull page. Keeping the page
+  // size explicit avoids an unnecessary extra round trip on a first sync.
+  static const _fullSyncPageSize = 500;
+  static const _maxBatchAttempts = 3;
+  static const _batchRetryBaseMs = 150;
 
   final AppDatabase database;
   final ApiClient? apiClient;
   final SharedPreferences? preferences;
+  final Random _mutationRandom = Random.secure();
+  // SharedPreferences is a platform bridge. Persisting one key per card made
+  // a first pull of a large deck spend seconds in thousands of bridge calls.
+  // Keep the hot path in memory and persist one compact JSON map per account.
+  final Map<String, Map<String, int>> _serverVersionCache = {};
 
   Future<List<SyncQueueItemModel>> pending(String accountId) {
     return database.loadPendingSync(accountId);
@@ -103,35 +122,28 @@ class SyncCoordinator {
       final deviceId = await _deviceId();
       var queuedConflictRetry = false;
 
-      for (var offset = 0; offset < latestItems.length; offset += _batchSize) {
-        final batch = latestItems.skip(offset).take(_batchSize).toList();
+      final batchSize = _batchSizeFor(accountId, latestItems);
+      for (var offset = 0; offset < latestItems.length; offset += batchSize) {
+        final batch = latestItems.skip(offset).take(batchSize).toList();
         final batchGroups = <String, List<SyncQueueItemModel>>{
           for (final item in batch)
             _objectKey(item.objectType, item.objectId):
                 groups[_objectKey(item.objectType, item.objectId)]!,
         };
+        final batchTimer = Stopwatch()..start();
         try {
-          final response = await client.post(
-            '/api/v2/sync/batch',
-            data: {
-              'requests': [
-                for (final item in batch)
-                  _syncRequestPayload(accountId, item, deviceId),
-              ],
-            },
+          final body = await _postBatchWithRetry(
+            client,
+            batch,
+            accountId: accountId,
+            deviceId: deviceId,
             cancelToken: cancelToken,
           );
-          final body = _stringMap(response.data);
-          final responses = body?['responses'];
-          if (body == null || responses is! List) {
-            throw const ApiException(
-              statusCode: 502,
-              message: 'Invalid sync response',
-            );
-          }
+          final responses = body['responses'] as List;
           final handled = <String>{};
           final syncedItemIds = <String>[];
           final retryItems = <SyncQueueItemModel>[];
+          final batchServerVersions = <String, int>{};
           for (final raw in responses) {
             final result = _stringMap(raw);
             if (result == null) continue;
@@ -148,12 +160,15 @@ class SyncCoordinator {
             if (groupedItems == null) continue;
             handled.add(key);
             final serverVersion = _version(result['serverVersion']);
-            await _saveServerVersion(
-              accountId,
-              objectType,
-              objectId,
-              serverVersion,
-            );
+            if (serverVersion != null) {
+              final versionKey = _serverVersionKey(
+                accountId,
+                objectType,
+                objectId,
+              );
+              batchServerVersions[versionKey] = serverVersion;
+              _serverVersionsFor(accountId)[versionKey] = serverVersion;
+            }
             if (result['conflict'] == true) {
               conflicts++;
               if (_isRemoteDeletion(result)) {
@@ -182,26 +197,74 @@ class SyncCoordinator {
                 );
               }
             } else if (groupedItems.last.operation == SyncOperation.upsert) {
-              // Some server versions acknowledge an upload without echoing
-              // the object data. Keep the accepted local snapshot in SQLite
-              // so a pull that raced with this upload cannot roll it back.
-              await _applyRemotePayload(
-                accountId,
-                objectType,
-                result['data'] ?? groupedItems.last.payload,
-                fallbackId: objectId,
-              );
+              // A successful upload response normally contains only the
+              // version. The local snapshot is already in SQLite, so writing
+              // it again for every card turns a 200-card progress batch into
+              // 200 redundant SQLite statements. Apply data only when the
+              // server actually returned a payload.
+              final acceptedData = result['data'];
+              if (acceptedData != null) {
+                await _applyRemotePayload(
+                  accountId,
+                  objectType,
+                  acceptedData,
+                  fallbackId: objectId,
+                );
+              }
             }
             for (final item in groupedItems) {
               synced++;
               syncedItemIds.add(item.id);
             }
           }
+          await _saveServerVersions(accountId, batchServerVersions);
           await database.markSyncItemsSynced(accountId, syncedItemIds);
           if (retryItems.isNotEmpty) {
             await database.enqueueSyncItems(retryItems);
             queuedConflictRetry = true;
           }
+
+          final failedByMessage = <String, List<SyncQueueItemModel>>{};
+          final errors = body['errors'];
+          if (errors is List) {
+            for (final raw in errors) {
+              final result = _stringMap(raw);
+              if (result == null) continue;
+              final objectType = result['objectType']
+                  ?.toString()
+                  .trim()
+                  .toUpperCase();
+              final objectId = result['objectId']?.toString().trim();
+              if (objectType == null ||
+                  objectType.isEmpty ||
+                  objectId == null ||
+                  objectId.isEmpty) {
+                continue;
+              }
+              final key = _objectKey(objectType, objectId);
+              final groupedItems = batchGroups[key];
+              // A malformed/duplicate server entry must not cause the same
+              // local mutation to be counted or updated twice.
+              if (groupedItems == null || handled.contains(key)) continue;
+              handled.add(key);
+              final message = result['message']?.toString().trim();
+              final errorMessage = message == null || message.isEmpty
+                  ? 'Sync object could not be saved. Please retry.'
+                  : message;
+              failedByMessage
+                  .putIfAbsent(errorMessage, () => [])
+                  .addAll(groupedItems);
+            }
+          }
+          for (final entry in failedByMessage.entries) {
+            failed += entry.value.length;
+            await database.markSyncFailedItems(
+              accountId,
+              entry.value,
+              entry.key,
+            );
+          }
+
           final missingItems = <SyncQueueItemModel>[];
           for (final entry in batchGroups.entries) {
             if (handled.contains(entry.key)) continue;
@@ -227,16 +290,110 @@ class SyncCoordinator {
             failedItems,
             error.message,
           );
+        } finally {
+          batchTimer.stop();
+          developer.log(
+            'pushPending batch account=$accountId offset=$offset '
+            'items=${batch.length} batchSize=$batchSize '
+            'durationMs=${batchTimer.elapsedMilliseconds}',
+            name: 'SyncCoordinator',
+          );
         }
       }
       if (networkFailure || !queuedConflictRetry) break;
     }
+    developer.log(
+      'pushPending complete account=$accountId synced=$synced failed=$failed '
+      'conflicts=$conflicts networkFailure=$networkFailure',
+      name: 'SyncCoordinator',
+    );
     return SyncReport(
       synced: synced,
       failed: failed,
       conflicts: conflicts,
       networkFailure: networkFailure,
     );
+  }
+
+  Future<Map<String, dynamic>> _postBatchWithRetry(
+    ApiClient client,
+    List<SyncQueueItemModel> batch, {
+    required String accountId,
+    required String deviceId,
+    CancelToken? cancelToken,
+  }) async {
+    final requestPayload = [
+      for (final item in batch) _syncRequestPayload(accountId, item, deviceId),
+    ];
+    final canReplay = batch.every(
+      (item) => item.id.trim().length >= 16 && item.id.trim().length <= 200,
+    );
+
+    for (var attempt = 0; ; attempt++) {
+      try {
+        final response = await client.post(
+          '/api/v2/sync/batch',
+          data: {'requests': requestPayload},
+          cancelToken: cancelToken,
+        );
+        final body = _stringMap(response.data);
+        final responses = body?['responses'];
+        if (body == null || responses is! List) {
+          throw const ApiException(
+            statusCode: 502,
+            message: 'Invalid sync response',
+          );
+        }
+        if (canReplay &&
+            attempt < _maxBatchAttempts - 1 &&
+            _shouldRetryBatch(body)) {
+          await _waitBeforeBatchRetry(attempt);
+          continue;
+        }
+        return body;
+      } on ApiException catch (error) {
+        if (!canReplay ||
+            attempt >= _maxBatchAttempts - 1 ||
+            !_isRetryableBatchError(error)) {
+          rethrow;
+        }
+        await _waitBeforeBatchRetry(attempt);
+      }
+    }
+  }
+
+  bool _shouldRetryBatch(Map<String, dynamic> body) {
+    final errors = body['errors'];
+    if (errors is! List || errors.isEmpty) return false;
+    return errors.every((raw) {
+      final error = _stringMap(raw);
+      final message = error?['message']?.toString() ?? '';
+      return _isRetryableSyncMessage(message);
+    });
+  }
+
+  bool _isRetryableBatchError(ApiException error) {
+    final status = error.statusCode;
+    return status == 429 ||
+        status == 500 ||
+        status == 502 ||
+        status == 503 ||
+        status == 504 ||
+        _isRetryableSyncMessage(error.message);
+  }
+
+  bool _isRetryableSyncMessage(String message) {
+    final normalized = message.toLowerCase();
+    return normalized.contains('busy') ||
+        normalized.contains('temporarily') ||
+        normalized.contains('retry') ||
+        normalized.contains('timeout');
+  }
+
+  Future<void> _waitBeforeBatchRetry(int attempt) {
+    final backoff = _batchRetryBaseMs * (1 << attempt);
+    final jitter = _mutationRandom.nextInt(_batchRetryBaseMs);
+    return Future<void>.delayed(Duration(milliseconds: backoff + jitter));
   }
 
   Future<FullSyncReport> fullSync(
@@ -248,6 +405,8 @@ class SyncCoordinator {
     if (client == null) return const FullSyncReport();
     var cards = 0;
     var documents = 0;
+    var decks = 0;
+    var settings = 0;
     var hasRemoteContent = false;
     var hasMore = true;
     var page = 0;
@@ -256,10 +415,13 @@ class SyncCoordinator {
     final storedVersion = preferences?.getString(
       '$_fullSyncVersionKey.$accountId',
     );
-    String? cursor = !force && storedVersion == _fullSyncVersion
-        ? storedSync
-        : null;
-    String? legacyLastSync = !force && cursor == null ? storedSync : null;
+    String? cursor;
+    String? legacyLastSync;
+    if (!force && storedSync != null && storedSync.trim().isNotEmpty) {
+      // Version 2 persisted a pagination cursor. Treat it as invalid and run
+      // one safe full pull instead of sending the base64 cursor as a timestamp.
+      if (storedVersion != '2') legacyLastSync = storedSync;
+    }
     final protectedObjectKeys = {
       for (final item in await database.loadPendingSync(accountId))
         _objectKey(item.objectType.trim().toUpperCase(), item.objectId),
@@ -269,6 +431,8 @@ class SyncCoordinator {
     Map<String, CardModel>? localCardsById;
     Map<String, DocumentModel>? localDocumentsById;
     final serverVersions = <String, int>{};
+    String? completedHighWaterAt;
+    String? completedSyncWatermark;
     while (hasMore) {
       page++;
       if (page > 1000) {
@@ -277,7 +441,9 @@ class SyncCoordinator {
           message: 'Full sync returned too many pages',
         );
       }
+      final pageTimer = Stopwatch()..start();
       final queryParameters = <String, dynamic>{};
+      queryParameters['limit'] = _fullSyncPageSize;
       if (cursor != null && cursor.trim().isNotEmpty) {
         queryParameters['cursor'] = cursor;
       } else if (legacyLastSync != null && legacyLastSync.trim().isNotEmpty) {
@@ -288,6 +454,7 @@ class SyncCoordinator {
         queryParameters: queryParameters,
         cancelToken: cancelToken,
       );
+      final fetchDurationMs = pageTimer.elapsedMilliseconds;
       final body = _stringMap(response.data);
       final objects = body?['objects'];
       if (body == null || (objects != null && objects is! List)) {
@@ -295,6 +462,16 @@ class SyncCoordinator {
           statusCode: 502,
           message: 'Invalid full sync response',
         );
+      }
+      final explicitHighWaterAt = body['highWaterAt']?.toString().trim();
+      final pageHighWaterAt = (explicitHighWaterAt ?? body['syncTime'])
+          ?.toString()
+          .trim();
+      if (explicitHighWaterAt != null && explicitHighWaterAt.isNotEmpty) {
+        completedHighWaterAt = explicitHighWaterAt;
+      }
+      if (pageHighWaterAt != null && pageHighWaterAt.isNotEmpty) {
+        completedSyncWatermark = pageHighWaterAt;
       }
       final remoteObjects = [
         ...(objects as List? ?? const <Object?>[]),
@@ -382,13 +559,25 @@ class SyncCoordinator {
             localDocumentsById[value.id] = value;
             documents++;
             hasRemoteContent = true;
+          case 'DECK':
+            await _saveDeckMetadata(accountId, objectId, payload);
+            decks++;
+            hasRemoteContent = true;
+          case 'SETTINGS':
+            await _applyRemoteSettings(accountId, payload);
+            settings++;
+            hasRemoteContent = true;
         }
       }
       await database.saveCards(cardsToSave.values);
       await database.saveDocuments(documentsToSave.values);
-      await _saveServerVersions(serverVersions);
       cardsToSave.clear();
       documentsToSave.clear();
+      developer.log(
+        'fullSync page=$page objects=${remoteObjects.length} '
+        'fetchMs=$fetchDurationMs totalMs=${pageTimer.elapsedMilliseconds}',
+        name: 'SyncCoordinator',
+      );
 
       final responseCursor = body['nextCursor']?.toString().trim();
       final nextCursor = responseCursor == null || responseCursor.isEmpty
@@ -414,6 +603,11 @@ class SyncCoordinator {
       hasMore = pageHasMore;
     }
 
+    // Persist the complete pull's version map once. Writing after every page
+    // is safe but needlessly repeats the same JSON serialization and platform
+    // bridge call for large decks.
+    await _saveServerVersions(accountId, serverVersions);
+
     if (force && hasRemoteContent) {
       await _removeSeedContent(
         accountId,
@@ -422,15 +616,30 @@ class SyncCoordinator {
         protectedObjectKeys: protectedObjectKeys,
       );
     }
+    if (completedHighWaterAt != null) {
+      // The checkpoint is only a tombstone-retention hint. It must not add a
+      // second blocking HTTP round trip to login/initial sync.
+      unawaited(_checkpointDevice(client, completedHighWaterAt, cancelToken));
+    }
+    // Persist only the completed high-water timestamp. A pagination cursor is
+    // valid only inside this pull; reusing the final cursor on the next pull
+    // would permanently exclude objects created after its high-water time.
     await preferences?.setString(
       _lastSyncKeyFor(accountId),
-      cursor ?? legacyLastSync ?? DateTime.now().toUtc().toIso8601String(),
+      completedSyncWatermark ??
+          legacyLastSync ??
+          DateTime.now().toUtc().toIso8601String(),
     );
     await preferences?.setString(
       '$_fullSyncVersionKey.$accountId',
       opaqueCursorSeen ? _fullSyncVersion : '1',
     );
-    return FullSyncReport(cards: cards, documents: documents);
+    return FullSyncReport(
+      cards: cards,
+      documents: documents,
+      decks: decks,
+      settings: settings,
+    );
   }
 
   CardModel _cardFromPayload(
@@ -677,19 +886,31 @@ class SyncCoordinator {
         await database.deleteDocument(objectId, accountId);
       case 'DECK':
         final folders = _deckFolderCandidates(object, objectId);
-        if (folders.isEmpty) return;
-        final localCards = await database.loadCards(accountId);
-        final localDocuments = await database.loadDocuments(accountId);
-        final cards = localCards.where((card) => folders.contains(card.folder));
-        final documents = localDocuments.where(
-          (document) => folders.contains(document.folder),
-        );
-        final cardIds = cards.map((card) => card.id).toSet();
-        final documentIds = documents.map((document) => document.id).toSet();
-        idsToClear.addAll(cardIds);
-        idsToClear.addAll(documentIds);
-        await database.deleteCardsByIds(accountId, cardIds);
-        await database.deleteDocumentsByIds(accountId, documentIds);
+        if (folders.isNotEmpty) {
+          final localCards = await database.loadCards(accountId);
+          final localDocuments = await database.loadDocuments(accountId);
+          final cards = localCards.where(
+            (card) => folders.contains(card.folder),
+          );
+          final documents = localDocuments.where(
+            (document) => folders.contains(document.folder),
+          );
+          final cardIds = cards.map((card) => card.id).toSet();
+          final documentIds = documents.map((document) => document.id).toSet();
+          idsToClear.addAll(cardIds);
+          idsToClear.addAll(documentIds);
+          await database.deleteCardsByIds(accountId, cardIds);
+          await database.deleteDocumentsByIds(accountId, documentIds);
+        }
+        await preferences?.remove('sync.deck.$accountId.$objectId');
+      case 'SETTINGS':
+        final prefs = preferences;
+        if (prefs != null) {
+          await prefs.remove('review.new_cards_per_day.$accountId');
+          await prefs.remove('review.reviews_per_day.$accountId');
+          await prefs.remove('review.autonomous_learning.$accountId');
+          await prefs.remove('review.selected_folder.$accountId');
+        }
     }
     await database.markPendingSyncObjectsSynced(accountId, idsToClear);
   }
@@ -817,7 +1038,7 @@ class SyncCoordinator {
 
     final now = DateTime.now();
     return SyncQueueItemModel(
-      id: 'conflict-card-$objectId-${now.microsecondsSinceEpoch}',
+      id: _mutationId('conflict-card', objectId, now),
       accountId: accountId,
       objectType: 'CARD',
       objectId: objectId,
@@ -882,6 +1103,70 @@ class SyncCoordinator {
         if (document.id.isNotEmpty) {
           await _saveDocumentPreservingContent(accountId, document);
         }
+      case 'DECK':
+        final id = fallbackId?.trim();
+        if (id != null && id.isNotEmpty) {
+          await _saveDeckMetadata(accountId, id, payload);
+        }
+      case 'SETTINGS':
+        await _applyRemoteSettings(accountId, payload);
+    }
+  }
+
+  Future<void> _saveDeckMetadata(
+    String accountId,
+    String objectId,
+    Map<String, dynamic> payload,
+  ) async {
+    final prefs = preferences;
+    if (prefs == null || objectId.trim().isEmpty) return;
+    await prefs.setString(
+      'sync.deck.$accountId.$objectId',
+      jsonEncode(payload),
+    );
+  }
+
+  Future<void> _applyRemoteSettings(
+    String accountId,
+    Map<String, dynamic> payload,
+  ) async {
+    final prefs = preferences;
+    if (prefs == null) return;
+    final nested =
+        _stringMap(payload['reviewSettings']) ??
+        _stringMap(payload['settings']);
+    final source = nested ?? payload;
+    final newCards = source['newCardsPerDay'];
+    final reviews = source['reviewsPerDay'];
+    final autonomous = source['autonomousLearning'];
+    if (newCards != null) {
+      await prefs.setInt(
+        'review.new_cards_per_day.$accountId',
+        _intValue(newCards).clamp(0, 9999).toInt(),
+      );
+    }
+    if (reviews != null) {
+      await prefs.setInt(
+        'review.reviews_per_day.$accountId',
+        _intValue(reviews).clamp(0, 9999).toInt(),
+      );
+    }
+    if (autonomous != null) {
+      await prefs.setBool(
+        'review.autonomous_learning.$accountId',
+        autonomous == true || autonomous.toString().toLowerCase() == 'true',
+      );
+    }
+    if (source.containsKey('selectedFolder')) {
+      final selectedFolder = source['selectedFolder']?.toString().trim();
+      if (selectedFolder == null || selectedFolder.isEmpty) {
+        await prefs.remove('review.selected_folder.$accountId');
+      } else {
+        await prefs.setString(
+          'review.selected_folder.$accountId',
+          selectedFolder,
+        );
+      }
     }
   }
 
@@ -912,36 +1197,106 @@ class SyncCoordinator {
     String objectId,
   ) => 'sync.object_version.$accountId.$objectType.$objectId';
 
+  String _serverVersionCacheKey(String accountId) =>
+      'sync.object_versions.$accountId';
+
+  Map<String, int> _serverVersionsFor(String accountId) {
+    return _serverVersionCache.putIfAbsent(accountId, () {
+      final result = <String, int>{};
+      final prefs = preferences;
+      if (prefs == null) return result;
+
+      final packed = prefs.getString(_serverVersionCacheKey(accountId));
+      if (packed != null && packed.trim().isNotEmpty) {
+        try {
+          final decoded = jsonDecode(packed);
+          if (decoded is Map) {
+            for (final entry in decoded.entries) {
+              final version = _version(entry.value);
+              if (version != null) result[entry.key.toString()] = version;
+            }
+          }
+        } catch (_) {
+          // A corrupt compact cache is recoverable from legacy keys below.
+        }
+      }
+
+      // Migrate old per-object keys without writing them one by one. Keeping
+      // the old keys is intentional: it makes downgrade/recovery harmless.
+      final legacyPrefix = 'sync.object_version.$accountId.';
+      for (final key in prefs.getKeys()) {
+        if (!key.startsWith(legacyPrefix) || result.containsKey(key)) continue;
+        final version = _version(prefs.getString(key));
+        if (version != null) result[key] = version;
+      }
+      return result;
+    });
+  }
+
+  int _batchSizeFor(String accountId, List<SyncQueueItemModel> items) {
+    final canUseProgressBatch =
+        items.isNotEmpty &&
+        items.every((item) {
+          if (item.objectType != 'CARD' ||
+              item.operation != SyncOperation.upsert) {
+            return false;
+          }
+          final decoded = _stringMap(_decodePayload(item.payload));
+          if (decoded?['syncMode'] != 'progress') return false;
+          return _serverVersionsFor(accountId)[_serverVersionKey(
+                accountId,
+                item.objectType,
+                item.objectId,
+              )] !=
+              null;
+        });
+    return canUseProgressBatch ? _progressBatchSize : _fullBatchSize;
+  }
+
   int _objectVersion(String accountId, SyncQueueItemModel item) {
-    final cached = _version(
-      preferences?.getString(
-        _serverVersionKey(accountId, item.objectType, item.objectId),
-      ),
-    );
+    final cached = _serverVersionsFor(
+      accountId,
+    )[_serverVersionKey(accountId, item.objectType, item.objectId)];
     // The fallback must represent the initial server version. Local review
     // counts and timestamps are not server versions and can make an update
     // look newer than it really is.
     return cached ?? 1;
   }
 
-  Future<void> _saveServerVersion(
+  Future<void> _saveServerVersions(
     String accountId,
-    String objectType,
-    String objectId,
-    int? version,
+    Map<String, int> versions,
   ) async {
-    if (version == null) return;
-    await preferences?.setString(
-      _serverVersionKey(accountId, objectType, objectId),
-      version.toString(),
-    );
-  }
-
-  Future<void> _saveServerVersions(Map<String, int> versions) async {
     final prefs = preferences;
     if (prefs == null || versions.isEmpty) return;
-    for (final entry in versions.entries) {
+    final cached = _serverVersionsFor(accountId);
+    cached.addAll(versions);
+    await prefs.setString(
+      _serverVersionCacheKey(accountId),
+      jsonEncode(cached),
+    );
+    // Preserve the old key for single-object writes so existing installations
+    // and downgrade paths continue to observe their last acknowledged value.
+    if (versions.length == 1) {
+      final entry = versions.entries.single;
       await prefs.setString(entry.key, entry.value.toString());
+    }
+  }
+
+  Future<void> _checkpointDevice(
+    ApiClient client,
+    String highWaterAt,
+    CancelToken? cancelToken,
+  ) async {
+    try {
+      await client.post(
+        '/api/v2/sync/device',
+        data: {'deviceId': await _deviceId(), 'highWaterAt': highWaterAt},
+        cancelToken: cancelToken,
+      );
+    } catch (_) {
+      // Checkpointing is best effort. If it fails, the server keeps the
+      // tombstones, which is safer than deleting them too early.
     }
   }
 
@@ -994,15 +1349,16 @@ class SyncCoordinator {
     SyncQueueItemModel item,
     String deviceId,
   ) {
+    final mutationId = item.id.trim();
     final decoded = _stringMap(_decodePayload(item.payload));
     final hasProgressMarker =
         item.objectType == 'CARD' && decoded?['syncMode'] == 'progress';
     final hasKnownServerVersion =
-        _version(
-          preferences?.getString(
-            _serverVersionKey(accountId, item.objectType, item.objectId),
-          ),
-        ) !=
+        _serverVersionsFor(accountId)[_serverVersionKey(
+          accountId,
+          item.objectType,
+          item.objectId,
+        )] !=
         null;
     final sendProgress = hasProgressMarker && hasKnownServerVersion;
 
@@ -1012,6 +1368,11 @@ class SyncCoordinator {
       'objectVersion': _objectVersion(accountId, item),
       'operation': item.operation.name,
       'deviceId': deviceId,
+      // The queue row is the durable mutation identity. It remains unchanged
+      // across network retries, while a new local snapshot receives a new
+      // queue ID and therefore a new server-side idempotency key.
+      if (mutationId.length >= 16 && mutationId.length <= 200)
+        'mutationId': mutationId,
       if (item.operation == SyncOperation.upsert)
         'data': sendProgress
             ? _progressPayload(decoded ?? const <String, dynamic>{})
@@ -1061,6 +1422,9 @@ class SyncCoordinator {
     await preferences?.setString(key, value);
     return value;
   }
+
+  String _mutationId(String prefix, String objectId, DateTime at) =>
+      '$prefix-$objectId-${at.microsecondsSinceEpoch}-${_mutationRandom.nextInt(1 << 32)}';
 }
 
 class SyncReport {
@@ -1078,8 +1442,15 @@ class SyncReport {
 }
 
 class FullSyncReport {
-  const FullSyncReport({this.cards = 0, this.documents = 0});
+  const FullSyncReport({
+    this.cards = 0,
+    this.documents = 0,
+    this.decks = 0,
+    this.settings = 0,
+  });
 
   final int cards;
   final int documents;
+  final int decks;
+  final int settings;
 }
