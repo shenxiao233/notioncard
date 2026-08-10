@@ -44,6 +44,7 @@ void main() {
             },
             {
               'id': 'source-2',
+              'order': 2,
               'type': 'single-choice',
               'front': '第二张卡',
               'back': ['答案二'],
@@ -67,7 +68,9 @@ void main() {
     expect(package.cards[0].answer, ['答案一']);
     expect(package.cards[0].tags, ['基础']);
     expect(package.cards[0].fsrs.state.name, 'newCard');
+    expect(package.cards[0].sortOrder, 1);
     expect(package.cards[1].id, 'market-deck-demo-source-2');
+    expect(package.cards[1].sortOrder, 2);
     expect(package.cards[1].type.name, 'single');
     expect(package.cards[1].options, {'A': '选项 A', 'B': '选项 B'});
   });

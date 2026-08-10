@@ -9,6 +9,7 @@ import 'package:path_provider/path_provider.dart';
 
 import '../network/api_client.dart';
 import '../network/api_config.dart';
+import '../network/api_exception.dart';
 import 'app_update_model.dart';
 
 class AppUpdateService {
@@ -25,15 +26,23 @@ class AppUpdateService {
 
   Future<AppUpdateManifest?> checkForUpdate() async {
     final packageInfo = await PackageInfo.fromPlatform();
-    final response = await apiClient.get(
-      _updateEndpoint,
-      options: Options(extra: const {'skipAuth': true}),
-      queryParameters: {
-        'platform': Platform.operatingSystem,
-        'version': packageInfo.version,
-        'build': packageInfo.buildNumber,
-      },
-    );
+    late final Response<dynamic> response;
+    try {
+      response = await apiClient.get(
+        _updateEndpoint,
+        options: Options(extra: const {'skipAuth': true}),
+        queryParameters: {
+          'platform': Platform.operatingSystem,
+          'version': packageInfo.version,
+          'build': packageInfo.buildNumber,
+        },
+      );
+    } on ApiException catch (error) {
+      // Older deployments did not expose the optional update manifest. Treat
+      // that as "no update" so startup is not marked as a failed operation.
+      if (error.statusCode == 404) return null;
+      rethrow;
+    }
     final manifest = parseManifest(response.data);
     if (manifest == null) return null;
 

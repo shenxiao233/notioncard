@@ -34,11 +34,13 @@ class AppShell extends ConsumerWidget {
     final isSettingsSubpage = location.startsWith('/settings/');
     final isDocumentDetail = location.startsWith('/library/document/');
     final isCardsSubpage = location.startsWith('/cards/');
+    final isMarketDeckDetail = location.startsWith('/market/deck/');
     final showBottomNavigation =
         !isStudyFlow &&
         !isSettingsSubpage &&
         !isDocumentDetail &&
-        !isCardsSubpage;
+        !isCardsSubpage &&
+        !isMarketDeckDetail;
     final update = ref.watch(appUpdateControllerProvider);
     final sync = ref.watch(syncControllerProvider);
     return AnnotatedRegion<SystemUiOverlayStyle>(

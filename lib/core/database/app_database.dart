@@ -21,6 +21,7 @@ class Cards extends Table {
   TextColumn get tagsJson => text()();
   DateTimeColumn get dueAt => dateTime()();
   DateTimeColumn get createdAt => dateTime()();
+  IntColumn get sortOrder => integer().nullable()();
   DateTimeColumn get updatedAt => dateTime()();
   IntColumn get reviews => integer().withDefault(const Constant(0))();
   TextColumn get mastery => text().withDefault(const Constant(''))();
@@ -90,7 +91,7 @@ class AppDatabase extends _$AppDatabase {
       );
 
   @override
-  int get schemaVersion => 5;
+  int get schemaVersion => 6;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -106,6 +107,13 @@ class AppDatabase extends _$AppDatabase {
       }
       if (from < 4) await _createIndexes();
       if (from < 5) await _createIndexes();
+      if (from < 6) {
+        await m.addColumn(cards, cards.sortOrder);
+        await customStatement(
+          'DROP INDEX IF EXISTS idx_cards_account_due_order',
+        );
+        await _createIndexes();
+      }
     },
   );
 
@@ -116,7 +124,7 @@ class AppDatabase extends _$AppDatabase {
     );
     await customStatement(
       'CREATE INDEX IF NOT EXISTS idx_cards_account_due_order '
-      'ON cards (account_id, due_at, created_at, id)',
+      'ON cards (account_id, due_at, sort_order, created_at, id)',
     );
     await customStatement(
       'CREATE INDEX IF NOT EXISTS idx_documents_account_updated '
@@ -196,6 +204,38 @@ class AppDatabase extends _$AppDatabase {
                 row.folder.equals(folder) & row.accountId.equals(accountId),
           ))
           .go();
+
+  Future<int> countCardsByFolder(String accountId, String folder) async {
+    final row = await customSelect(
+      'SELECT COUNT(*) AS card_count FROM cards '
+      'WHERE account_id = ? AND folder = ?',
+      variables: [Variable<String>(accountId), Variable<String>(folder)],
+      readsFrom: {cards},
+    ).getSingle();
+    return row.read<int>('card_count');
+  }
+
+  Future<int> updateCardsFolder({
+    required String accountId,
+    required String fromFolder,
+    required String toFolder,
+    DateTime? updatedAt,
+  }) =>
+      (update(cards)..where(
+            (row) =>
+                row.accountId.equals(accountId) & row.folder.equals(fromFolder),
+          ))
+          .write(
+            CardsCompanion(
+              folder: Value(toFolder),
+              // A deck rename is a collection-level metadata change. Do not
+              // touch every card's content timestamp, otherwise later dirty
+              // checks can mistake the rename for N card edits.
+              updatedAt: updatedAt == null
+                  ? const Value.absent()
+                  : Value(updatedAt),
+            ),
+          );
 
   Future<void> deleteReviewEventsByCard(String cardId, String accountId) =>
       (delete(reviewEvents)..where(
@@ -318,6 +358,17 @@ class AppDatabase extends _$AppDatabase {
           ))
           .go();
 
+  Future<void> updateReviewEventsFolder({
+    required String accountId,
+    required String fromFolder,
+    required String toFolder,
+  }) =>
+      (update(reviewEvents)..where(
+            (row) =>
+                row.accountId.equals(accountId) & row.folder.equals(fromFolder),
+          ))
+          .write(ReviewEventsCompanion(folder: Value(toFolder)));
+
   Future<List<ReviewEventModel>> loadReviewEvents(String accountId) async {
     final rows =
         await (select(reviewEvents)
@@ -407,37 +458,52 @@ class AppDatabase extends _$AppDatabase {
   }
 
   Future<void> enqueueSync(SyncQueueItemModel value) async {
-    // Keep only the newest unsent snapshot for an object. The queue row ID is
-    // also its mutationId, so replacing the row creates a new idempotent
-    // mutation while preventing review sessions from building an unbounded
-    // backlog of obsolete progress states.
-    await (delete(syncQueue)..where(
-          (row) =>
-              row.accountId.equals(value.accountId) &
-              row.objectType.equals(value.objectType) &
-              row.objectId.equals(value.objectId),
-        ))
-        .go();
-    await into(syncQueue).insert(
-      SyncQueueCompanion.insert(
-        id: value.id,
-        accountId: value.accountId,
-        objectType: value.objectType,
-        objectId: value.objectId,
-        objectVersion: Value(value.objectVersion),
-        operation: value.operation.name,
-        payloadJson: value.payload,
-        status: value.status.name,
-        attempts: Value(value.attempts),
-        lastError: Value(value.lastError),
-        createdAt: value.createdAt,
-        updatedAt: value.updatedAt,
-      ),
-    );
+    await transaction(() async {
+      // Keep only the newest unsent snapshot for an object. The queue row ID
+      // is also its mutationId, so replacing the row creates a new idempotent
+      // mutation while preventing review sessions from building an unbounded
+      // backlog of obsolete progress states. The delete and insert must be
+      // one transaction: direct callers such as settings can otherwise
+      // interleave and leave two snapshots for the same object.
+      await (delete(syncQueue)..where(
+            (row) =>
+                row.accountId.equals(value.accountId) &
+                row.objectType.equals(value.objectType) &
+                row.objectId.equals(value.objectId),
+          ))
+          .go();
+      await into(syncQueue).insert(
+        SyncQueueCompanion.insert(
+          id: value.id,
+          accountId: value.accountId,
+          objectType: value.objectType,
+          objectId: value.objectId,
+          objectVersion: Value(value.objectVersion),
+          operation: value.operation.name,
+          payloadJson: value.payload,
+          status: value.status.name,
+          attempts: Value(value.attempts),
+          lastError: Value(value.lastError),
+          updatedAt: value.updatedAt,
+          createdAt: value.createdAt,
+        ),
+      );
+    });
   }
 
   Future<void> enqueueSyncItems(Iterable<SyncQueueItemModel> values) async {
-    final items = values.toList();
+    final latestByObject = <String, SyncQueueItemModel>{};
+    for (final value in values) {
+      final key =
+          '${value.accountId}\u0000${value.objectType}\u0000${value.objectId}';
+      final previous = latestByObject[key];
+      if (previous == null || !value.updatedAt.isBefore(previous.updatedAt)) {
+        latestByObject[key] = value;
+      }
+    }
+    // Callers normally provide one item per object, but enforcing that here
+    // prevents a malformed/retried batch from creating duplicate mutations.
+    final items = latestByObject.values.toList(growable: false);
     final companions = items
         .map(
           (value) => SyncQueueCompanion.insert(
@@ -458,35 +524,38 @@ class AppDatabase extends _$AppDatabase {
         .toList();
     if (companions.isEmpty) return;
 
-    // A mutation queue stores only the newest snapshot for each object. The
-    // old implementation deleted one row at a time, which made a 1,210-card
-    // relearn execute 1,210 SQLite statements before it could insert the new
-    // snapshots. Group the deletes by account/type and chunk the IN clause so
-    // this remains below SQLite's bound-variable limit on Android.
-    final objectIdsByScope = <String, Map<String, Set<String>>>{};
-    for (final value in items) {
-      objectIdsByScope
-          .putIfAbsent(value.accountId, () => <String, Set<String>>{})
-          .putIfAbsent(value.objectType, () => <String>{})
-          .add(value.objectId);
-    }
-    for (final accountEntry in objectIdsByScope.entries) {
-      for (final typeEntry in accountEntry.value.entries) {
-        final ids = typeEntry.value.toList(growable: false);
-        for (var offset = 0; offset < ids.length; offset += 400) {
-          final chunk = ids.skip(offset).take(400).toSet();
-          await (delete(syncQueue)..where(
-                (row) =>
-                    row.accountId.equals(accountEntry.key) &
-                    row.objectType.equals(typeEntry.key) &
-                    row.objectId.isIn(chunk),
-              ))
-              .go();
+    await transaction(() async {
+      // A mutation queue stores only the newest snapshot for each object. The
+      // old implementation deleted one row at a time, which made a 1,210-card
+      // relearn execute 1,210 SQLite statements before it could insert the new
+      // snapshots. Group the deletes by account/type and chunk the IN clause so
+      // this remains below SQLite's bound-variable limit on Android. Keep the
+      // replacement atomic for direct callers as well.
+      final objectIdsByScope = <String, Map<String, Set<String>>>{};
+      for (final value in items) {
+        objectIdsByScope
+            .putIfAbsent(value.accountId, () => <String, Set<String>>{})
+            .putIfAbsent(value.objectType, () => <String>{})
+            .add(value.objectId);
+      }
+      for (final accountEntry in objectIdsByScope.entries) {
+        for (final typeEntry in accountEntry.value.entries) {
+          final ids = typeEntry.value.toList(growable: false);
+          for (var offset = 0; offset < ids.length; offset += 400) {
+            final chunk = ids.skip(offset).take(400).toSet();
+            await (delete(syncQueue)..where(
+                  (row) =>
+                      row.accountId.equals(accountEntry.key) &
+                      row.objectType.equals(typeEntry.key) &
+                      row.objectId.isIn(chunk),
+                ))
+                .go();
+          }
         }
       }
-    }
-    await batch((batch) {
-      batch.insertAllOnConflictUpdate(syncQueue, companions);
+      await batch((batch) {
+        batch.insertAllOnConflictUpdate(syncQueue, companions);
+      });
     });
   }
 
@@ -577,6 +646,22 @@ class AppDatabase extends _$AppDatabase {
         .go();
   }
 
+  Future<void> discardPendingSyncItems(
+    String accountId, {
+    required String objectType,
+    required Iterable<String> objectIds,
+  }) async {
+    final ids = objectIds.where((id) => id.isNotEmpty).toSet();
+    if (ids.isEmpty) return;
+    await (delete(syncQueue)..where(
+          (row) =>
+              row.accountId.equals(accountId) &
+              row.objectType.equals(objectType) &
+              row.objectId.isIn(ids),
+        ))
+        .go();
+  }
+
   SyncQueueItemModel _syncFromRow(SyncQueueData row) => SyncQueueItemModel(
     id: row.id,
     accountId: row.accountId,
@@ -616,6 +701,7 @@ class AppDatabase extends _$AppDatabase {
       tags: List<String>.from(jsonDecode(row.tagsJson) as List),
       dueAt: row.dueAt,
       createdAt: row.createdAt,
+      sortOrder: row.sortOrder,
       updatedAt: row.updatedAt,
       reviews: row.reviews,
       mastery: row.mastery,
@@ -646,6 +732,7 @@ class AppDatabase extends _$AppDatabase {
     tagsJson: jsonEncode(value.tags),
     dueAt: value.dueAt,
     createdAt: value.createdAt,
+    sortOrder: Value(value.sortOrder),
     updatedAt: value.updatedAt,
     reviews: Value(value.reviews),
     mastery: Value(value.mastery),

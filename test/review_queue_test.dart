@@ -88,6 +88,33 @@ void main() {
     expect(queue.map((card) => card.id), ['card-1', 'card-2', 'card-3']);
   });
 
+  test('review queue uses the source deck order before timestamps', () {
+    final base = DateTime(2026, 1, 1);
+    final cards = [
+      _card(
+        'late-source-card',
+        FsrsState.newCard,
+        createdAt: base,
+        sortOrder: 2,
+      ),
+      _card(
+        '源远流长',
+        FsrsState.newCard,
+        createdAt: base.add(const Duration(days: 10)),
+        sortOrder: 1,
+      ),
+    ];
+
+    final queue = buildReviewQueue(
+      cards: cards,
+      settings: const ReviewSettings(autonomousLearning: true),
+      folder: null,
+      now: base.add(const Duration(days: 11)),
+    );
+
+    expect(queue.map((card) => card.id), ['源远流长', 'late-source-card']);
+  });
+
   test('autonomous learning includes all due new and scheduled cards', () {
     final cards = [
       _card('new-1', FsrsState.newCard),
@@ -190,7 +217,12 @@ void main() {
   });
 }
 
-CardModel _card(String id, FsrsState state, {DateTime? createdAt}) {
+CardModel _card(
+  String id,
+  FsrsState state, {
+  DateTime? createdAt,
+  int? sortOrder,
+}) {
   final due = createdAt ?? DateTime(2026, 1, 1);
   return CardModel(
     id: id,
@@ -205,6 +237,7 @@ CardModel _card(String id, FsrsState state, {DateTime? createdAt}) {
     tags: const [],
     dueAt: due,
     createdAt: due,
+    sortOrder: sortOrder,
     updatedAt: due,
     reviews: state == FsrsState.newCard ? 0 : 1,
     mastery: '',

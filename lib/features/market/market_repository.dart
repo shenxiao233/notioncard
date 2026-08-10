@@ -393,6 +393,10 @@ class MarketRepository {
         ) ??
         '';
     final tags = _readStringList(json['tags'], field: '卡片标签', required: false);
+    final declaredOrder = _readInt(json['sortOrder'] ?? json['order']);
+    final sortOrder = declaredOrder != null && declaredOrder > 0
+        ? declaredOrder
+        : index + 1;
 
     return CardModel(
       id: id,
@@ -406,10 +410,11 @@ class MarketRepository {
       explanation: explanation,
       tags: tags,
       dueAt: now,
-      // Preserve the order in cards.json. Imported cards previously shared
-      // one timestamp, so the review queue had to fall back to card IDs and
-      // could no longer follow the deck's original sequence.
-      createdAt: now.add(Duration(microseconds: index)),
+      // Preserve the source deck order explicitly. DateTime precision varies
+      // between local database backends, so encoding the position in
+      // createdAt is not reliable.
+      sortOrder: sortOrder,
+      createdAt: now,
       updatedAt: now,
       reviews: 0,
       mastery: '',

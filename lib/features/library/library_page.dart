@@ -8,6 +8,8 @@ import '../../core/models/document_model.dart';
 import '../../core/widgets/app_layout.dart';
 import '../../core/widgets/app_visuals.dart';
 import '../../core/widgets/empty_state.dart';
+import '../../core/widgets/resource_action_dialogs.dart';
+import '../../core/widgets/swipe_action_tile.dart';
 
 class LibraryPage extends ConsumerStatefulWidget {
   const LibraryPage({super.key});
@@ -97,7 +99,11 @@ class _LibraryPageState extends ConsumerState<LibraryPage> {
                     )
                   else
                     ...filtered.map(
-                      (document) => _DocumentItem(document: document),
+                      (document) => _DocumentItem(
+                        document: document,
+                        onRename: () => _renameDocument(document),
+                        onDelete: () => _deleteDocument(document),
+                      ),
                     ),
                 ],
               ),
@@ -116,86 +122,142 @@ class _LibraryPageState extends ConsumerState<LibraryPage> {
     ref.invalidate(documentsProvider);
     await ref.read(documentsProvider.future);
   }
+
+  Future<void> _renameDocument(DocumentModel document) async {
+    final title = await showRenameResourceDialog(
+      context,
+      title: '重命名文档',
+      initialValue: document.title,
+      hintText: '输入文档名称',
+    );
+    if (title == null || !mounted) return;
+    try {
+      await ref
+          .read(contentRepositoryProvider)
+          .renameDocument(document: document, title: title);
+      ref.invalidate(documentsProvider);
+      ref.invalidate(pendingSyncProvider);
+      ref
+          .read(syncControllerProvider.notifier)
+          .scheduleSync(reason: 'document-rename');
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('文档已重命名，等待同步。')));
+      }
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('重命名失败：$error')));
+      }
+    }
+  }
+
+  Future<void> _deleteDocument(DocumentModel document) async {
+    final confirmed = await showDeleteResourceDialog(
+      context,
+      title: '删除这篇文档？',
+      message: '删除后会从本地移除，并在下次同步时从其他设备删除。',
+    );
+    if (!confirmed || !mounted) return;
+    try {
+      await ref
+          .read(contentRepositoryProvider)
+          .deleteDocument(
+            accountId: document.accountId,
+            documentId: document.id,
+          );
+      ref.invalidate(documentsProvider);
+      ref.invalidate(pendingSyncProvider);
+      ref
+          .read(syncControllerProvider.notifier)
+          .scheduleSync(reason: 'document-delete');
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('文档已删除，等待同步。')));
+      }
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('删除失败：$error')));
+      }
+    }
+  }
 }
 
 class _DocumentItem extends StatelessWidget {
-  const _DocumentItem({required this.document});
+  const _DocumentItem({
+    required this.document,
+    required this.onRename,
+    required this.onDelete,
+  });
 
   final DocumentModel document;
+  final VoidCallback onRename;
+  final VoidCallback onDelete;
 
   @override
-  Widget build(BuildContext context) {
-    return Container(
-      margin: const EdgeInsets.only(bottom: 10),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(20),
-        boxShadow: appCardShadow,
-      ),
-      child: Material(
-        color: Colors.transparent,
-        child: InkWell(
-          onTap: () => context.push('/library/document/${document.id}'),
-          borderRadius: BorderRadius.circular(20),
-          child: Padding(
-            padding: const EdgeInsets.all(14),
-            child: Row(
+  Widget build(BuildContext context) => SwipeActionTile(
+    margin: const EdgeInsets.only(bottom: 10),
+    onTap: () => context.push('/library/document/${document.id}'),
+    onRename: onRename,
+    onDelete: onDelete,
+    child: Padding(
+      padding: const EdgeInsets.all(14),
+      child: Row(
+        children: [
+          Container(
+            width: 44,
+            height: 44,
+            alignment: Alignment.center,
+            decoration: const BoxDecoration(
+              color: AppVisualColors.softGreen,
+              shape: BoxShape.circle,
+            ),
+            child: const Icon(
+              Icons.description_rounded,
+              color: AppVisualColors.green,
+              size: 21,
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Container(
-                  width: 44,
-                  height: 44,
-                  alignment: Alignment.center,
-                  decoration: const BoxDecoration(
-                    color: AppVisualColors.softGreen,
-                    shape: BoxShape.circle,
-                  ),
-                  child: const Icon(
-                    Icons.description_rounded,
-                    color: AppVisualColors.green,
-                    size: 21,
+                Text(
+                  document.title,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: AppVisualColors.ink,
+                    fontSize: 15,
+                    fontWeight: FontWeight.w700,
+                    height: 1.3,
                   ),
                 ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        document.title,
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          color: AppVisualColors.ink,
-                          fontSize: 15,
-                          fontWeight: FontWeight.w700,
-                          height: 1.3,
-                        ),
-                      ),
-                      const SizedBox(height: 5),
-                      Text(
-                        '${document.folder} · 更新于 ${DateFormat('M月d日').format(document.updatedAt.toLocal())}',
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          color: AppVisualColors.muted,
-                          fontSize: 12,
-                        ),
-                      ),
-                    ],
+                const SizedBox(height: 5),
+                Text(
+                  '${document.folder} · 更新于 ${DateFormat('M月d日').format(document.updatedAt.toLocal())}',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: AppVisualColors.muted,
+                    fontSize: 12,
                   ),
-                ),
-                const SizedBox(width: 8),
-                const Icon(
-                  Icons.chevron_right_rounded,
-                  color: AppVisualColors.muted,
                 ),
               ],
             ),
           ),
-        ),
+          const SizedBox(width: 8),
+          const Icon(Icons.chevron_right_rounded, color: AppVisualColors.muted),
+        ],
       ),
-    );
-  }
+    ),
+  );
 }
 
 class _LibrarySearchField extends StatelessWidget {

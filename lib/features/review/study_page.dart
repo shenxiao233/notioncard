@@ -7,7 +7,6 @@ import 'package:go_router/go_router.dart';
 
 import '../../app/app_providers.dart';
 import '../../core/models/card_model.dart';
-import '../../core/sound/app_sound_settings.dart';
 import '../../core/widgets/empty_state.dart';
 import '../../core/widgets/markdown_content.dart';
 import 'review_queue.dart';
@@ -343,15 +342,9 @@ class _StudyPageState extends ConsumerState<StudyPage> {
           .read(contentRepositoryProvider)
           .saveReview(card: updated, event: event);
       _ratingCounts[rating] = (_ratingCounts[rating] ?? 0) + 1;
-      unawaited(
-        ref.read(appSoundServiceProvider).play(_soundForRating(rating)),
-      );
       final sessionComplete =
           _queueIds != null && _index + 1 >= _queueIds!.length;
       if (sessionComplete) {
-        unawaited(
-          ref.read(appSoundServiceProvider).play(AppSoundEvent.sessionComplete),
-        );
         _scheduleSessionSync();
       }
       if (!mounted) return;
@@ -477,13 +470,6 @@ class _StudyPageState extends ConsumerState<StudyPage> {
     return '${next.month}/${next.day}';
   }
 
-  AppSoundEvent _soundForRating(ReviewRating rating) => switch (rating) {
-    ReviewRating.again => AppSoundEvent.reviewAgain,
-    ReviewRating.hard => AppSoundEvent.reviewHard,
-    ReviewRating.good => AppSoundEvent.reviewGood,
-    ReviewRating.easy => AppSoundEvent.reviewEasy,
-  };
-
   void _scheduleSessionSync() {
     ref
         .read(syncControllerProvider.notifier)
@@ -535,8 +521,6 @@ class _StudyCard extends StatefulWidget {
 }
 
 class _StudyCardState extends State<_StudyCard> {
-  bool _expanded = false;
-
   @override
   Widget build(BuildContext context) {
     final card = widget.card;
@@ -551,8 +535,6 @@ class _StudyCardState extends State<_StudyCard> {
     final progress = todayTotal == 0
         ? 0.0
         : (todayCompleted / todayTotal).clamp(0.0, 1.0);
-    final canExpand =
-        card.type == CardType.note && card.noteContent.trim().isNotEmpty;
     return Column(
       children: [
         Container(
@@ -642,51 +624,17 @@ class _StudyCardState extends State<_StudyCard> {
                 ),
               ],
             ),
-            child: Stack(
-              clipBehavior: Clip.hardEdge,
-              children: [
-                Positioned.fill(
-                  child: SingleChildScrollView(
-                    physics: _expanded
-                        ? const BouncingScrollPhysics()
-                        : const NeverScrollableScrollPhysics(),
-                    child: _CardBody(
-                      card: card,
-                      selected: selected,
-                      answered: answered,
-                      favorite: favorite,
-                      onToggleFavorite: widget.onToggleFavorite,
-                      onOpenAnswerCard: widget.onOpenAnswerCard,
-                      onSelect: widget.onSelect,
-                    ),
-                  ),
-                ),
-                if (canExpand && !_expanded)
-                  Positioned(
-                    left: 0,
-                    right: 0,
-                    bottom: 0,
-                    height: 76,
-                    child: DecoratedBox(
-                      decoration: const BoxDecoration(
-                        gradient: LinearGradient(
-                          begin: Alignment.topCenter,
-                          end: Alignment.bottomCenter,
-                          // Transparent white avoids the gray interpolation
-                          // produced by transparent black.
-                          colors: [Color(0x00FFFFFF), Colors.white],
-                        ),
-                      ),
-                      child: Align(
-                        alignment: Alignment.bottomCenter,
-                        child: _ExpandButton(
-                          expanded: _expanded,
-                          onTap: () => setState(() => _expanded = !_expanded),
-                        ),
-                      ),
-                    ),
-                  ),
-              ],
+            child: SingleChildScrollView(
+              physics: const BouncingScrollPhysics(),
+              child: _CardBody(
+                card: card,
+                selected: selected,
+                answered: answered,
+                favorite: favorite,
+                onToggleFavorite: widget.onToggleFavorite,
+                onOpenAnswerCard: widget.onOpenAnswerCard,
+                onSelect: widget.onSelect,
+              ),
             ),
           ),
         ),
@@ -823,30 +771,6 @@ class _ReviewContent extends StatelessWidget {
       textStyle: const TextStyle(color: _studyInk, fontSize: 15, height: 1.5),
     );
   }
-}
-
-class _ExpandButton extends StatelessWidget {
-  const _ExpandButton({required this.expanded, required this.onTap});
-
-  final bool expanded;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) => Center(
-    child: TextButton.icon(
-      onPressed: onTap,
-      icon: Icon(
-        expanded
-            ? Icons.keyboard_arrow_up_rounded
-            : Icons.keyboard_arrow_down_rounded,
-        color: _studyGreen,
-      ),
-      label: Text(
-        expanded ? '收起全文' : '展开全文',
-        style: const TextStyle(color: _studyGreen, fontWeight: FontWeight.w600),
-      ),
-    ),
-  );
 }
 
 class _Tag extends StatelessWidget {

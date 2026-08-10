@@ -19,21 +19,30 @@ class SyncCoordinator {
 
   static const _supportedObjectTypes = {'DECK', 'DOCUMENT', 'CARD', 'SETTINGS'};
   static const _lastSyncKey = 'sync.last_sync';
+  static const _syncRevisionKey = 'sync.revision';
   static const _fullSyncVersionKey = 'sync.full_sync_version';
+  static const _cardOrderVersionKey = 'sync.card_order_version';
+  static const _cardContentHashKey = 'sync.card_content_hashes';
   // The saved value is a completed high-water timestamp, never an in-flight
   // pagination cursor. Version 2 stored the opaque cursor itself and must be
   // invalidated once so it cannot hide changes made after that cursor.
   static const _fullSyncVersion = '3';
+  static const _cardOrderVersion = '1';
   // Keep these in lockstep with the server's SYNC_BATCH_MAX. Only mutations
   // that are known to be progress-only are sent in the larger batch; a first
   // upload may still contain the complete card body and must stay smaller.
   static const _fullBatchSize = 50;
   static const _progressBatchSize = 200;
-  // The server supports up to 500 objects per pull page. Keeping the page
-  // size explicit avoids an unnecessary extra round trip on a first sync.
-  static const _fullSyncPageSize = 500;
+  // Keep this aligned with the production server's SYNC_PAGE_MAX. A larger
+  // page removes a network round trip during first sync without changing the
+  // incremental sync path.
+  static const _fullSyncPageSize = 1000;
   static const _maxBatchAttempts = 3;
   static const _batchRetryBaseMs = 150;
+  // GET requests are idempotent. A short bounded retry absorbs transient
+  // Cloudflare/proxy disconnects without making a sync hang for a long time.
+  static const _readRetryAttempts = 3;
+  static const _readRetryBaseMs = 200;
 
   final AppDatabase database;
   final ApiClient? apiClient;
@@ -54,7 +63,60 @@ class SyncCoordinator {
 
   bool needsInitialFullSync(String accountId) {
     final lastSync = preferences?.getString(_lastSyncKeyFor(accountId));
-    return lastSync == null || lastSync.trim().isEmpty;
+    final revision = preferences?.getString(_syncRevisionKeyFor(accountId));
+    final orderVersion = preferences?.getString(
+      '$_cardOrderVersionKey.$accountId',
+    );
+    return lastSync == null ||
+        lastSync.trim().isEmpty ||
+        revision == null ||
+        revision.trim().isEmpty ||
+        orderVersion != _cardOrderVersion;
+  }
+
+  Future<SyncStatus> checkSyncStatus(String accountId) async {
+    final client = apiClient;
+    if (client == null) {
+      return const SyncStatus(changed: false, supported: false);
+    }
+    final knownRevision = preferences?.getString(
+      _syncRevisionKeyFor(accountId),
+    );
+    try {
+      final response = await _getWithRetry(
+        client,
+        '/api/v2/sync/status',
+        queryParameters: knownRevision == null
+            ? null
+            : {'revision': knownRevision},
+      );
+      final body = _stringMap(response.data);
+      final revision = body?['revision']?.toString().trim();
+      final changed = body?['changed'];
+      if (body == null ||
+          revision == null ||
+          revision.isEmpty ||
+          changed is! bool) {
+        throw const ApiException(
+          statusCode: 502,
+          message: 'Invalid sync status response',
+        );
+      }
+      return SyncStatus(changed: changed, revision: revision, supported: true);
+    } on ApiException catch (error) {
+      // Older servers do not have the status endpoint yet. Falling back to
+      // the existing pull keeps the rollout backward compatible.
+      if (error.statusCode == 404) {
+        return const SyncStatus(changed: true, supported: false);
+      }
+      rethrow;
+    }
+  }
+
+  Future<void> saveSyncRevision(String accountId, String? revision) async {
+    final value = revision?.trim();
+    if (value == null || value.isEmpty) return;
+    await preferences?.setString(_syncRevisionKeyFor(accountId), value);
   }
 
   Future<void> retryPending(String accountId) async {
@@ -95,6 +157,11 @@ class SyncCoordinator {
     var failed = 0;
     var conflicts = 0;
     var networkFailure = false;
+    var remoteChanged = false;
+    String? currentBaseRevision = preferences?.getString(
+      _syncRevisionKeyFor(accountId),
+    );
+    String? latestSyncRevision;
     // A conflict can produce a merged local card that needs one more upload
     // with the server's current version. Allow that retry in the same sync so
     // a valid local review does not remain stuck as "waiting to upload".
@@ -137,8 +204,19 @@ class SyncCoordinator {
             batch,
             accountId: accountId,
             deviceId: deviceId,
+            baseRevision: currentBaseRevision,
             cancelToken: cancelToken,
           );
+          final bodyRevision = _syncRevisionFromBody(body);
+          if (bodyRevision != null) {
+            latestSyncRevision = _maxSyncRevision(
+              latestSyncRevision,
+              bodyRevision,
+            );
+            currentBaseRevision = latestSyncRevision;
+            await saveSyncRevision(accountId, latestSyncRevision);
+          }
+          remoteChanged = remoteChanged || body['remoteChanged'] == true;
           final responses = body['responses'] as List;
           final handled = <String>{};
           final syncedItemIds = <String>[];
@@ -304,14 +382,20 @@ class SyncCoordinator {
     }
     developer.log(
       'pushPending complete account=$accountId synced=$synced failed=$failed '
-      'conflicts=$conflicts networkFailure=$networkFailure',
+      'conflicts=$conflicts networkFailure=$networkFailure '
+      'remoteChanged=$remoteChanged revision=${latestSyncRevision ?? '-'}',
       name: 'SyncCoordinator',
     );
+    if (latestSyncRevision != null) {
+      await saveSyncRevision(accountId, latestSyncRevision);
+    }
     return SyncReport(
       synced: synced,
       failed: failed,
       conflicts: conflicts,
       networkFailure: networkFailure,
+      syncRevision: latestSyncRevision,
+      remoteChanged: remoteChanged,
     );
   }
 
@@ -320,23 +404,181 @@ class SyncCoordinator {
     List<SyncQueueItemModel> batch, {
     required String accountId,
     required String deviceId,
+    String? baseRevision,
+    CancelToken? cancelToken,
+  }) async {
+    try {
+      final body = await _postBatchRequestWithRetry(
+        client,
+        batch,
+        accountId: accountId,
+        deviceId: deviceId,
+        baseRevision: baseRevision,
+        cancelToken: cancelToken,
+      );
+      if (_canReplayBatch(batch) &&
+          _shouldRetryBatch(body) &&
+          batch.length > 1) {
+        return _postSplitBatch(
+          client,
+          batch,
+          accountId: accountId,
+          deviceId: deviceId,
+          baseRevision: baseRevision,
+          cancelToken: cancelToken,
+        );
+      }
+      return body;
+    } on ApiException catch (error) {
+      // A transient server failure can affect one large transaction even
+      // though each mutation is valid. Once the idempotent retries are
+      // exhausted, split only retryable failures sequentially so a single
+      // timeout/lock does not leave 200 cards stuck in the local failed
+      // queue. Authentication and validation failures must stay intact and
+      // must not trigger a recursive storm of smaller requests.
+      if (_canReplayBatch(batch) &&
+          batch.length > 1 &&
+          _isRetryableBatchError(error)) {
+        developer.log(
+          'splitting failed batch account=$accountId items=${batch.length} '
+          'status=${error.statusCode} message=${error.message}',
+          name: 'SyncCoordinator',
+          error: error,
+        );
+        return _postSplitBatch(
+          client,
+          batch,
+          accountId: accountId,
+          deviceId: deviceId,
+          baseRevision: baseRevision,
+          cancelToken: cancelToken,
+        );
+      }
+      rethrow;
+    }
+  }
+
+  Future<Map<String, dynamic>> _postSplitBatch(
+    ApiClient client,
+    List<SyncQueueItemModel> batch, {
+    required String accountId,
+    required String deviceId,
+    String? baseRevision,
+    CancelToken? cancelToken,
+  }) async {
+    final midpoint = batch.length ~/ 2;
+    final left = await _postBatchPart(
+      client,
+      batch.sublist(0, midpoint),
+      accountId: accountId,
+      deviceId: deviceId,
+      // A split request no longer has one atomic starting revision. Force the
+      // caller to pull once after the split instead of making an unsafe
+      // remote-change decision from two independent sub-batches.
+      baseRevision: null,
+      cancelToken: cancelToken,
+    );
+    final right = await _postBatchPart(
+      client,
+      batch.sublist(midpoint),
+      accountId: accountId,
+      deviceId: deviceId,
+      baseRevision: null,
+      cancelToken: cancelToken,
+    );
+    final syncRevision = _maxSyncRevision(
+      _syncRevisionFromBody(left),
+      _syncRevisionFromBody(right),
+    );
+    return {
+      'responses': [
+        ...(_listValue(left['responses'])),
+        ...(_listValue(right['responses'])),
+      ],
+      'errors': [
+        ...(_listValue(left['errors'])),
+        ...(_listValue(right['errors'])),
+      ],
+      if (syncRevision != null) 'syncRevision': syncRevision,
+      'remoteChanged':
+          baseRevision != null ||
+          left['remoteChanged'] == true ||
+          right['remoteChanged'] == true,
+    };
+  }
+
+  Future<Map<String, dynamic>> _postBatchPart(
+    ApiClient client,
+    List<SyncQueueItemModel> batch, {
+    required String accountId,
+    required String deviceId,
+    String? baseRevision,
+    CancelToken? cancelToken,
+  }) async {
+    try {
+      return await _postBatchWithRetry(
+        client,
+        batch,
+        accountId: accountId,
+        deviceId: deviceId,
+        baseRevision: baseRevision,
+        cancelToken: cancelToken,
+      );
+    } on ApiException catch (error) {
+      // A successful sibling must not be turned back into a failed item when
+      // this half of a split batch fails. Keep network failures pending so
+      // the coordinator can retry them as a unit; turn an exhausted server
+      // failure into item-level errors for only this half.
+      if (error.isNetworkFailure) rethrow;
+      developer.log(
+        'split part failed account=$accountId items=${batch.length} '
+        'status=${error.statusCode} message=${error.message}',
+        name: 'sync.batch',
+        error: error,
+      );
+      return _failedBatchBody(batch, error.message);
+    }
+  }
+
+  Future<Map<String, dynamic>> _postBatchRequestWithRetry(
+    ApiClient client,
+    List<SyncQueueItemModel> batch, {
+    required String accountId,
+    required String deviceId,
+    String? baseRevision,
     CancelToken? cancelToken,
   }) async {
     final requestPayload = [
       for (final item in batch) _syncRequestPayload(accountId, item, deviceId),
     ];
-    final canReplay = batch.every(
-      (item) => item.id.trim().length >= 16 && item.id.trim().length <= 200,
-    );
+    final canReplay = _canReplayBatch(batch);
 
     for (var attempt = 0; ; attempt++) {
+      final requestTimer = Stopwatch()..start();
       try {
         final response = await client.post(
           '/api/v2/sync/batch',
-          data: {'requests': requestPayload},
+          data: {
+            'requests': requestPayload,
+            if (baseRevision != null && baseRevision.trim().isNotEmpty)
+              'baseRevision': baseRevision,
+          },
           cancelToken: cancelToken,
         );
         final body = _stringMap(response.data);
+        final responseCount = body?['responses'] is List
+            ? (body!['responses'] as List).length
+            : 0;
+        final errorCount = body?['errors'] is List
+            ? (body!['errors'] as List).length
+            : 0;
+        developer.log(
+          'request account=$accountId items=${batch.length} '
+          'attempt=${attempt + 1} status=${response.statusCode} '
+          'durationMs=${requestTimer.elapsedMilliseconds} '
+          'responses=$responseCount errors=$errorCount',
+          name: 'sync.batch',
+        );
         final responses = body?['responses'];
         if (body == null || responses is! List) {
           throw const ApiException(
@@ -347,11 +589,25 @@ class SyncCoordinator {
         if (canReplay &&
             attempt < _maxBatchAttempts - 1 &&
             _shouldRetryBatch(body)) {
+          developer.log(
+            'retrying batch account=$accountId items=${batch.length} '
+            'attempt=${attempt + 1}',
+            name: 'SyncCoordinator',
+          );
           await _waitBeforeBatchRetry(attempt);
           continue;
         }
         return body;
       } on ApiException catch (error) {
+        developer.log(
+          'request failed account=$accountId items=${batch.length} '
+          'attempt=${attempt + 1} status=${error.statusCode} '
+          'durationMs=${requestTimer.elapsedMilliseconds} '
+          'retryable=${_isRetryableBatchError(error)} '
+          'message=${error.message}',
+          name: 'sync.batch',
+          error: error,
+        );
         if (!canReplay ||
             attempt >= _maxBatchAttempts - 1 ||
             !_isRetryableBatchError(error)) {
@@ -360,6 +616,48 @@ class SyncCoordinator {
         await _waitBeforeBatchRetry(attempt);
       }
     }
+  }
+
+  bool _canReplayBatch(List<SyncQueueItemModel> batch) => batch.every(
+    (item) => item.id.trim().length >= 16 && item.id.trim().length <= 200,
+  );
+
+  List<Object?> _listValue(Object? value) =>
+      value is List ? List<Object?>.from(value) : <Object?>[];
+
+  Map<String, dynamic> _failedBatchBody(
+    List<SyncQueueItemModel> batch,
+    String message,
+  ) {
+    final errorMessage = message.trim().isEmpty
+        ? 'Sync request failed. Please retry.'
+        : message;
+    return {
+      'responses': const <Object?>[],
+      'errors': [
+        for (final item in batch)
+          {
+            'objectType': item.objectType,
+            'objectId': item.objectId,
+            'message': errorMessage,
+          },
+      ],
+    };
+  }
+
+  String? _syncRevisionFromBody(Map<String, dynamic> body) {
+    var latest = _syncRevisionValue(body['syncRevision']);
+    final responses = body['responses'];
+    if (responses is List) {
+      for (final raw in responses) {
+        final response = _stringMap(raw);
+        latest = _maxSyncRevision(
+          latest,
+          _syncRevisionValue(response?['syncRevision']),
+        );
+      }
+    }
+    return latest;
   }
 
   bool _shouldRetryBatch(Map<String, dynamic> body) {
@@ -374,7 +672,9 @@ class SyncCoordinator {
 
   bool _isRetryableBatchError(ApiException error) {
     final status = error.statusCode;
-    return status == 429 ||
+    return error.isNetworkFailure ||
+        status == 408 ||
+        status == 429 ||
         status == 500 ||
         status == 502 ||
         status == 503 ||
@@ -386,8 +686,52 @@ class SyncCoordinator {
     final normalized = message.toLowerCase();
     return normalized.contains('busy') ||
         normalized.contains('temporarily') ||
-        normalized.contains('retry') ||
-        normalized.contains('timeout');
+        normalized.contains('timeout') ||
+        normalized.contains('timed out') ||
+        normalized.contains('too many requests') ||
+        normalized.contains('rate limit') ||
+        normalized.contains('deadlock') ||
+        normalized.contains('lock timeout');
+  }
+
+  Future<Response<dynamic>> _getWithRetry(
+    ApiClient client,
+    String path, {
+    Map<String, dynamic>? queryParameters,
+    CancelToken? cancelToken,
+  }) async {
+    for (var attempt = 0; ; attempt++) {
+      final timer = Stopwatch()..start();
+      try {
+        final response = await client.get(
+          path,
+          queryParameters: queryParameters,
+          cancelToken: cancelToken,
+        );
+        if (attempt > 0) {
+          developer.log(
+            'read retry succeeded path=$path attempt=${attempt + 1} '
+            'durationMs=${timer.elapsedMilliseconds}',
+            name: 'sync.read',
+          );
+        }
+        return response;
+      } on ApiException catch (error) {
+        final retryable =
+            attempt < _readRetryAttempts - 1 && _isRetryableBatchError(error);
+        developer.log(
+          'read request failed path=$path attempt=${attempt + 1} '
+          'durationMs=${timer.elapsedMilliseconds} retryable=$retryable '
+          'status=${error.statusCode} message=${error.message}',
+          name: 'sync.read',
+          error: error,
+        );
+        if (!retryable) rethrow;
+        final backoff = _readRetryBaseMs * (1 << attempt);
+        final jitter = _mutationRandom.nextInt(_readRetryBaseMs);
+        await Future<void>.delayed(Duration(milliseconds: backoff + jitter));
+      }
+    }
   }
 
   Future<void> _waitBeforeBatchRetry(int attempt) {
@@ -422,17 +766,38 @@ class SyncCoordinator {
       // one safe full pull instead of sending the base64 cursor as a timestamp.
       if (storedVersion != '2') legacyLastSync = storedSync;
     }
+    // Once the first full pull is complete, the local database already owns
+    // card content. Ask the server to send only review-state fields for cards
+    // changed by a progress mutation. Older servers ignore this query flag
+    // and continue returning complete card payloads.
+    final requestProgressOnly = legacyLastSync != null;
+    final pendingItems = await database.loadPendingSync(accountId);
     final protectedObjectKeys = {
-      for (final item in await database.loadPendingSync(accountId))
+      for (final item in pendingItems)
         _objectKey(item.objectType.trim().toUpperCase(), item.objectId),
     };
+    final deckRenamesToApply = <Map<String, String>>[];
+    for (final item in pendingItems) {
+      if (item.objectType != 'DECK' || item.operation != SyncOperation.upsert) {
+        continue;
+      }
+      final rename = _deckRenameFromPayload(
+        item.objectId,
+        _payloadMap(_decodePayload(item.payload)),
+      );
+      if (rename != null) deckRenamesToApply.add(rename);
+    }
     final cardsToSave = <String, CardModel>{};
     final documentsToSave = <String, DocumentModel>{};
     Map<String, CardModel>? localCardsById;
     Map<String, DocumentModel>? localDocumentsById;
     final serverVersions = <String, int>{};
+    final contentHashes = _contentHashesFor(accountId);
+    final contentFetchIds = <String>{};
     String? completedHighWaterAt;
     String? completedSyncWatermark;
+    String? syncRevision;
+    var missingProgressContent = false;
     while (hasMore) {
       page++;
       if (page > 1000) {
@@ -444,12 +809,15 @@ class SyncCoordinator {
       final pageTimer = Stopwatch()..start();
       final queryParameters = <String, dynamic>{};
       queryParameters['limit'] = _fullSyncPageSize;
+      if (requestProgressOnly) queryParameters['progressOnly'] = 'true';
+      if (requestProgressOnly) queryParameters['contentMode'] = 'manifest';
       if (cursor != null && cursor.trim().isNotEmpty) {
         queryParameters['cursor'] = cursor;
       } else if (legacyLastSync != null && legacyLastSync.trim().isNotEmpty) {
         queryParameters['lastSyncAt'] = legacyLastSync;
       }
-      final response = await client.get(
+      final response = await _getWithRetry(
+        client,
         '/api/v2/sync/full',
         queryParameters: queryParameters,
         cancelToken: cancelToken,
@@ -463,6 +831,10 @@ class SyncCoordinator {
           message: 'Invalid full sync response',
         );
       }
+      syncRevision = _maxSyncRevision(
+        syncRevision,
+        _syncRevisionValue(body['syncRevision']),
+      );
       final explicitHighWaterAt = body['highWaterAt']?.toString().trim();
       final pageHighWaterAt = (explicitHighWaterAt ?? body['syncTime'])
           ?.toString()
@@ -495,35 +867,79 @@ class SyncCoordinator {
         if (protectedObjectKeys.contains(_objectKey(objectType, objectId))) {
           continue;
         }
-        if (_isRemoteDeletion(object)) {
+        // A manifest entry deliberately omits the card body with data=null.
+        // It is not a tombstone and must remain available for the follow-up
+        // content request below.
+        final contentOmitted =
+            objectType == 'CARD' &&
+            object['contentIncluded'] == false &&
+            object['data'] == null;
+        if (_isRemoteDeletion(object) && !contentOmitted) {
           cardsToSave.remove(objectId);
           documentsToSave.remove(objectId);
+          contentHashes.remove(objectId);
           await _removeRemoteObject(accountId, objectType, objectId, object);
+          continue;
+        }
+        final contentHash = object['contentHash']?.toString().trim();
+        if (contentOmitted) {
+          final knownContentHash = contentHashes[objectId];
+          if (contentHash != null && contentHash.isNotEmpty) {
+            contentHashes[objectId] = contentHash;
+          }
+          if (localCardsById == null) {
+            final localCards = await database.loadCards(accountId);
+            localCardsById = {for (final value in localCards) value.id: value};
+          }
+          if (localCardsById[objectId] == null ||
+              contentHash == null ||
+              contentHash.isEmpty ||
+              knownContentHash != contentHash) {
+            contentFetchIds.add(objectId);
+          }
+          cards++;
+          hasRemoteContent = true;
           continue;
         }
         final payload = _payloadMap(object['data']);
         if (payload == null) continue;
         switch (objectType) {
           case 'CARD':
-            final card = _cardFromPayload(
-              accountId,
-              payload,
-              fallbackId: objectId,
-              fallbackUpdatedAt: objectUpdatedAt,
-            );
-            if (card.id.isEmpty) continue;
             if (localCardsById == null) {
               final localCards = await database.loadCards(accountId);
               localCardsById = {
                 for (final value in localCards) value.id: value,
               };
             }
-            final localCard = localCardsById[card.id];
-            final value = localCard == null
-                ? card
-                : _mergeCardProgress(localCard, card);
+            final localCard = localCardsById[objectId];
+            final isProgressOnly = payload['syncMode'] == 'progress';
+            final remoteCard = _cardFromPayload(
+              accountId,
+              payload,
+              fallbackId: objectId,
+              fallbackUpdatedAt: objectUpdatedAt,
+            );
+            if (remoteCard.id.isEmpty) continue;
+            if (isProgressOnly && localCard == null) {
+              // A progress-only payload is valid only when the local content
+              // exists. Ask for one safe full pull below instead of creating
+              // a blank card and permanently advancing past its content.
+              missingProgressContent = true;
+              continue;
+            }
+            // A progress-only response must never replace a local card with a
+            // mostly-empty shell. It updates only the review state and keeps
+            // the question/options/content already stored on the device.
+            final value = isProgressOnly && localCard != null
+                ? _mergeCardProgressOnly(localCard, remoteCard)
+                : localCard == null
+                ? remoteCard
+                : _mergeCardProgress(localCard, remoteCard);
             cardsToSave[value.id] = value;
             localCardsById[value.id] = value;
+            if (contentHash != null && contentHash.isNotEmpty) {
+              contentHashes[value.id] = contentHash;
+            }
             cards++;
             hasRemoteContent = true;
           case 'DOCUMENT':
@@ -561,6 +977,8 @@ class SyncCoordinator {
             hasRemoteContent = true;
           case 'DECK':
             await _saveDeckMetadata(accountId, objectId, payload);
+            final rename = _deckRenameFromPayload(objectId, payload);
+            if (rename != null) deckRenamesToApply.add(rename);
             decks++;
             hasRemoteContent = true;
           case 'SETTINGS':
@@ -603,10 +1021,37 @@ class SyncCoordinator {
       hasMore = pageHasMore;
     }
 
+    if (contentFetchIds.isNotEmpty && !missingProgressContent) {
+      await _fetchMissingCardContent(
+        accountId,
+        contentFetchIds,
+        localCardsById ?? <String, CardModel>{},
+        serverVersions,
+        contentHashes,
+        cancelToken,
+      );
+    }
+
+    if (missingProgressContent && !force) {
+      developer.log(
+        'progress-only pull found a card without local content; retrying once with full card payloads',
+        name: 'SyncCoordinator',
+      );
+      return fullSync(accountId, force: true, cancelToken: cancelToken);
+    }
+
+    // Apply deck-level renames after all card pages have been materialized.
+    // This keeps a DECK mutation correct even when the server returns the
+    // deck object before its cards.
+    for (final rename in deckRenamesToApply) {
+      await _applyDeckRename(accountId, rename);
+    }
+
     // Persist the complete pull's version map once. Writing after every page
     // is safe but needlessly repeats the same JSON serialization and platform
     // bridge call for large decks.
     await _saveServerVersions(accountId, serverVersions);
+    await _saveContentHashes(accountId, contentHashes);
 
     if (force && hasRemoteContent) {
       await _removeSeedContent(
@@ -634,12 +1079,84 @@ class SyncCoordinator {
       '$_fullSyncVersionKey.$accountId',
       opaqueCursorSeen ? _fullSyncVersion : '1',
     );
+    await preferences?.setString(
+      '$_cardOrderVersionKey.$accountId',
+      _cardOrderVersion,
+    );
+    await saveSyncRevision(
+      accountId,
+      syncRevision ??
+          preferences?.getString(_syncRevisionKeyFor(accountId)) ??
+          '0',
+    );
     return FullSyncReport(
       cards: cards,
       documents: documents,
       decks: decks,
       settings: settings,
     );
+  }
+
+  Future<void> _fetchMissingCardContent(
+    String accountId,
+    Set<String> objectIds,
+    Map<String, CardModel> localCardsById,
+    Map<String, int> serverVersions,
+    Map<String, String> contentHashes,
+    CancelToken? cancelToken,
+  ) async {
+    final client = apiClient;
+    if (client == null || objectIds.isEmpty) return;
+    final ids = objectIds.toList();
+    for (var offset = 0; offset < ids.length; offset += 100) {
+      final chunk = ids.skip(offset).take(100).toList();
+      final response = await _getWithRetry(
+        client,
+        '/api/v2/sync/content',
+        queryParameters: {'ids': chunk.join(',')},
+        cancelToken: cancelToken,
+      );
+      final body = _stringMap(response.data);
+      final objects = body?['objects'];
+      if (body == null || objects is! List) {
+        throw const ApiException(
+          statusCode: 502,
+          message: 'Invalid card content response',
+        );
+      }
+      final cardsToSave = <String, CardModel>{};
+      for (final raw in objects.whereType<Map>()) {
+        final object = _stringMap(raw);
+        if (object == null) continue;
+        final objectId = _objectId(object);
+        if (objectId == null || _isRemoteDeletion(object)) continue;
+        final payload = _payloadMap(object['data']);
+        if (payload == null) continue;
+        final remote = _cardFromPayload(
+          accountId,
+          payload,
+          fallbackId: objectId,
+          fallbackUpdatedAt: object['updatedAt'],
+        );
+        if (remote.id.isEmpty) continue;
+        final local = localCardsById[remote.id];
+        final value = local == null
+            ? remote
+            : _mergeCardProgress(local, remote);
+        cardsToSave[value.id] = value;
+        localCardsById[value.id] = value;
+        final serverVersion = _version(object['objectVersion']);
+        if (serverVersion != null) {
+          serverVersions[_serverVersionKey(accountId, 'CARD', value.id)] =
+              serverVersion;
+        }
+        final contentHash = object['contentHash']?.toString().trim();
+        if (contentHash != null && contentHash.isNotEmpty) {
+          contentHashes[value.id] = contentHash;
+        }
+      }
+      await database.saveCards(cardsToSave.values);
+    }
   }
 
   CardModel _cardFromPayload(
@@ -669,6 +1186,7 @@ class SyncCoordinator {
       tags: _stringList(data['tags']),
       dueAt: _date(data['dueAt']),
       createdAt: _date(data['createdAt']),
+      sortOrder: _optionalPositiveInt(data['sortOrder'] ?? data['order']),
       updatedAt: _date(data['updatedAt'] ?? fallbackUpdatedAt),
       reviews: _intValue(data['reviews']),
       mastery: data['mastery']?.toString() ?? '',
@@ -886,14 +1404,23 @@ class SyncCoordinator {
         await database.deleteDocument(objectId, accountId);
       case 'DECK':
         final folders = _deckFolderCandidates(object, objectId);
+        final metadata = _stringMap(object['metadata']);
+        final removeUncategorized =
+            metadata?['deckUncategorized'] == true ||
+            _stringMap(object['data'])?['folder']?.toString().trim().isEmpty ==
+                true;
         if (folders.isNotEmpty) {
           final localCards = await database.loadCards(accountId);
           final localDocuments = await database.loadDocuments(accountId);
           final cards = localCards.where(
-            (card) => folders.contains(card.folder),
+            (card) =>
+                folders.contains(card.folder) ||
+                (removeUncategorized && card.folder.trim().isEmpty),
           );
           final documents = localDocuments.where(
-            (document) => folders.contains(document.folder),
+            (document) =>
+                folders.contains(document.folder) ||
+                (removeUncategorized && document.folder.trim().isEmpty),
           );
           final cardIds = cards.map((card) => card.id).toSet();
           final documentIds = documents.map((document) => document.id).toSet();
@@ -921,16 +1448,26 @@ class SyncCoordinator {
   ) {
     final candidates = <String>{objectId};
     final data = _payloadMap(object['data']) ?? _stringMap(object['data']);
-    for (final source in [object, ?data]) {
+    final metadata = _stringMap(object['metadata']);
+    for (final source in [object, ?data, ?metadata]) {
       for (final key in const [
         'folder',
         'folderId',
         'deckId',
         'name',
         'title',
+        'deckFolder',
       ]) {
         final value = source[key]?.toString().trim();
         if (value != null && value.isNotEmpty) candidates.add(value);
+      }
+      final aliases = source['deckFolders'];
+      if (aliases is List) {
+        candidates.addAll(
+          aliases
+              .map((value) => value?.toString().trim() ?? '')
+              .where((value) => value.isNotEmpty),
+        );
       }
     }
     return candidates;
@@ -1064,14 +1601,30 @@ class SyncCoordinator {
     CardModel remote, {
     bool preferLocalProgress = false,
   }) {
-    if (!preferLocalProgress && local.reviews < remote.reviews) return remote;
+    if (!preferLocalProgress && local.reviews < remote.reviews) {
+      return remote.sortOrder == null && local.sortOrder != null
+          ? remote.copyWith(sortOrder: local.sortOrder)
+          : remote;
+    }
     return remote.copyWith(
+      sortOrder: remote.sortOrder ?? local.sortOrder,
       dueAt: local.dueAt,
       updatedAt: local.updatedAt,
       reviews: local.reviews,
       mastery: local.mastery,
       suspended: local.suspended,
       fsrs: local.fsrs,
+    );
+  }
+
+  CardModel _mergeCardProgressOnly(CardModel local, CardModel remote) {
+    return local.copyWith(
+      dueAt: remote.dueAt,
+      updatedAt: remote.updatedAt,
+      reviews: remote.reviews,
+      mastery: remote.mastery,
+      suspended: remote.suspended,
+      fsrs: remote.fsrs,
     );
   }
 
@@ -1107,6 +1660,8 @@ class SyncCoordinator {
         final id = fallbackId?.trim();
         if (id != null && id.isNotEmpty) {
           await _saveDeckMetadata(accountId, id, payload);
+          final rename = _deckRenameFromPayload(id, payload);
+          if (rename != null) await _applyDeckRename(accountId, rename);
         }
       case 'SETTINGS':
         await _applyRemoteSettings(accountId, payload);
@@ -1124,7 +1679,65 @@ class SyncCoordinator {
       'sync.deck.$accountId.$objectId',
       jsonEncode(payload),
     );
+    final name = _deckNameFromPayload(payload);
+    if (name.isNotEmpty) {
+      await prefs.setString(_deckNameKey(accountId, name), objectId);
+    }
   }
+
+  Map<String, String>? _deckRenameFromPayload(
+    String objectId,
+    Map<String, dynamic>? payload,
+  ) {
+    if (payload == null ||
+        objectId.trim().isEmpty ||
+        !payload.containsKey('renameFrom')) {
+      return null;
+    }
+    final from = payload['renameFrom']?.toString().trim() ?? '';
+    final to = _deckNameFromPayload(payload);
+    if (to.isEmpty || from == to) return null;
+    return {
+      'id': objectId,
+      'from': from,
+      'to': to,
+      'updatedAt': payload['updatedAt']?.toString() ?? '',
+    };
+  }
+
+  String _deckNameFromPayload(Map<String, dynamic> payload) =>
+      _firstText(payload, const ['title', 'folder', 'name']);
+
+  Future<void> _applyDeckRename(
+    String accountId,
+    Map<String, String> rename,
+  ) async {
+    final from = rename['from'] ?? '';
+    final to = rename['to'] ?? '';
+    if (to.isEmpty || from == to) return;
+    await database.transaction(() async {
+      await database.updateCardsFolder(
+        accountId: accountId,
+        fromFolder: from,
+        toFolder: to,
+      );
+      await database.updateReviewEventsFolder(
+        accountId: accountId,
+        fromFolder: from,
+        toFolder: to,
+      );
+    });
+    final deckId = rename['id'];
+    if (deckId != null && deckId.isNotEmpty) {
+      await preferences?.setString(_deckNameKey(accountId, to), deckId);
+    }
+  }
+
+  String _deckNameKey(String accountId, String folder) =>
+      'sync.deck.local.name.' +
+      accountId +
+      '.' +
+      base64UrlEncode(utf8.encode(folder.trim()));
 
   Future<void> _applyRemoteSettings(
     String accountId,
@@ -1177,6 +1790,25 @@ class SyncCoordinator {
   }
 
   String _lastSyncKeyFor(String accountId) => '$_lastSyncKey.$accountId';
+
+  String _syncRevisionKeyFor(String accountId) =>
+      '$_syncRevisionKey.$accountId';
+
+  String? _syncRevisionValue(Object? value) {
+    final raw = value?.toString().trim();
+    if (raw == null || !RegExp(r'^\d+$').hasMatch(raw)) return null;
+    return raw;
+  }
+
+  String? _maxSyncRevision(String? left, String? right) {
+    if (left == null || left.isEmpty) return right;
+    if (right == null || right.isEmpty) return left;
+    final leftValue = BigInt.tryParse(left);
+    final rightValue = BigInt.tryParse(right);
+    if (leftValue == null) return right;
+    if (rightValue == null) return left;
+    return rightValue > leftValue ? right : left;
+  }
 
   String _syncCursor(Map<String, dynamic>? body) {
     for (final key in const [
@@ -1283,6 +1915,38 @@ class SyncCoordinator {
     }
   }
 
+  Map<String, String> _contentHashesFor(String accountId) {
+    final result = <String, String>{};
+    final packed = preferences?.getString(_contentHashKeyFor(accountId));
+    if (packed == null || packed.trim().isEmpty) return result;
+    try {
+      final decoded = jsonDecode(packed);
+      if (decoded is Map) {
+        for (final entry in decoded.entries) {
+          final value = entry.value?.toString().trim();
+          if (value != null && value.isNotEmpty) {
+            result[entry.key.toString()] = value;
+          }
+        }
+      }
+    } catch (_) {
+      // A corrupt hash cache is recoverable by the next manifest pull.
+    }
+    return result;
+  }
+
+  Future<void> _saveContentHashes(
+    String accountId,
+    Map<String, String> hashes,
+  ) async {
+    final prefs = preferences;
+    if (prefs == null || hashes.isEmpty) return;
+    await prefs.setString(_contentHashKeyFor(accountId), jsonEncode(hashes));
+  }
+
+  String _contentHashKeyFor(String accountId) =>
+      '$_cardContentHashKey.$accountId';
+
   Future<void> _checkpointDevice(
     ApiClient client,
     String highWaterAt,
@@ -1336,6 +2000,13 @@ class SyncCoordinator {
     return int.tryParse(value?.toString() ?? '') ?? 0;
   }
 
+  int? _optionalPositiveInt(Object? value) {
+    final parsed = value is num
+        ? value.toInt()
+        : int.tryParse(value?.toString() ?? '');
+    return parsed != null && parsed > 0 ? parsed : null;
+  }
+
   double _doubleValue(Object? value) {
     if (value is num) return value.toDouble();
     return double.tryParse(value?.toString() ?? '') ?? 0;
@@ -1373,7 +2044,8 @@ class SyncCoordinator {
       // queue ID and therefore a new server-side idempotency key.
       if (mutationId.length >= 16 && mutationId.length <= 200)
         'mutationId': mutationId,
-      if (item.operation == SyncOperation.upsert)
+      if (item.operation == SyncOperation.upsert ||
+          (item.objectType == 'DECK' && item.operation == SyncOperation.delete))
         'data': sendProgress
             ? _progressPayload(decoded ?? const <String, dynamic>{})
             : _withoutSyncControlFields(decoded ?? const <String, dynamic>{}),
@@ -1433,12 +2105,28 @@ class SyncReport {
     this.failed = 0,
     this.conflicts = 0,
     this.networkFailure = false,
+    this.syncRevision,
+    this.remoteChanged = false,
   });
 
   final int synced;
   final int failed;
   final int conflicts;
   final bool networkFailure;
+  final String? syncRevision;
+  final bool remoteChanged;
+}
+
+class SyncStatus {
+  const SyncStatus({
+    required this.changed,
+    this.revision,
+    this.supported = true,
+  });
+
+  final bool changed;
+  final String? revision;
+  final bool supported;
 }
 
 class FullSyncReport {

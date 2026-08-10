@@ -9,6 +9,8 @@ import '../../core/models/document_model.dart';
 import '../../core/widgets/app_layout.dart';
 import '../../core/widgets/app_visuals.dart';
 import '../../core/widgets/empty_state.dart';
+import '../../core/widgets/resource_action_dialogs.dart';
+import '../../core/widgets/swipe_action_tile.dart';
 
 enum KnowledgeBaseSection { documents, cards }
 
@@ -358,13 +360,13 @@ class _SectionContent extends StatelessWidget {
   }
 }
 
-class _DocumentsSection extends StatelessWidget {
+class _DocumentsSection extends ConsumerWidget {
   const _DocumentsSection({required this.documents});
 
   final List<DocumentModel> documents;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final entries = [...documents]
       ..sort((left, right) => right.updatedAt.compareTo(left.updatedAt));
     return _LimitedResourceSection(
@@ -380,6 +382,8 @@ class _DocumentsSection extends StatelessWidget {
               iconColor: AppVisualColors.green,
               iconBackground: AppVisualColors.softGreen,
               onTap: () => context.push('/library/document/${document.id}'),
+              onRename: () => _renameDocument(context, ref, document),
+              onDelete: () => _deleteDocument(context, ref, document),
             ),
           )
           .toList(),
@@ -390,15 +394,87 @@ class _DocumentsSection extends StatelessWidget {
       ),
     );
   }
+
+  Future<void> _renameDocument(
+    BuildContext context,
+    WidgetRef ref,
+    DocumentModel document,
+  ) async {
+    final title = await showRenameResourceDialog(
+      context,
+      title: '重命名文档',
+      initialValue: document.title,
+      hintText: '输入文档名称',
+    );
+    if (title == null || !context.mounted) return;
+    try {
+      await ref
+          .read(contentRepositoryProvider)
+          .renameDocument(document: document, title: title);
+      ref.invalidate(documentsProvider);
+      ref.invalidate(pendingSyncProvider);
+      ref
+          .read(syncControllerProvider.notifier)
+          .scheduleSync(reason: 'document-rename');
+      if (context.mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('文档已重命名，等待同步。')));
+      }
+    } catch (error) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('重命名失败：$error')));
+      }
+    }
+  }
+
+  Future<void> _deleteDocument(
+    BuildContext context,
+    WidgetRef ref,
+    DocumentModel document,
+  ) async {
+    final confirmed = await showDeleteResourceDialog(
+      context,
+      title: '删除这篇文档？',
+      message: '删除后会从本地移除，并在下次同步时从其他设备删除。',
+    );
+    if (!confirmed || !context.mounted) return;
+    try {
+      await ref
+          .read(contentRepositoryProvider)
+          .deleteDocument(
+            accountId: document.accountId,
+            documentId: document.id,
+          );
+      ref.invalidate(documentsProvider);
+      ref.invalidate(pendingSyncProvider);
+      ref
+          .read(syncControllerProvider.notifier)
+          .scheduleSync(reason: 'document-delete');
+      if (context.mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('文档已删除，等待同步。')));
+      }
+    } catch (error) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('删除失败：$error')));
+      }
+    }
+  }
 }
 
-class _CardsSection extends StatelessWidget {
+class _CardsSection extends ConsumerWidget {
   const _CardsSection({required this.decks});
 
   final List<_DeckSummary> decks;
 
   @override
-  Widget build(BuildContext context) => _LimitedResourceSection(
+  Widget build(BuildContext context, WidgetRef ref) => _LimitedResourceSection(
     title: '我的卡牌',
     subtitle: '${decks.length} 个牌组 · ${_cardCount(decks)} 张卡牌',
     entries: decks
@@ -411,6 +487,8 @@ class _CardsSection extends StatelessWidget {
             iconColor: const Color(0xff4778e8),
             iconBackground: const Color(0xfff0f4ff),
             onTap: () => context.push('/cards/deck', extra: deck.routeFolder),
+            onRename: () => _renameDeck(context, ref, deck),
+            onDelete: () => _deleteDeck(context, ref, deck),
           ),
         )
         .toList(),
@@ -420,6 +498,82 @@ class _CardsSection extends StatelessWidget {
       icon: Icons.style_outlined,
     ),
   );
+
+  Future<void> _renameDeck(
+    BuildContext context,
+    WidgetRef ref,
+    _DeckSummary deck,
+  ) async {
+    final name = await showRenameResourceDialog(
+      context,
+      title: '重命名牌组',
+      initialValue: deck.name,
+      hintText: '输入牌组名称',
+    );
+    if (name == null || !context.mounted) return;
+    try {
+      final count = await ref
+          .read(contentRepositoryProvider)
+          .renameDeck(
+            accountId: deck.cards.first.accountId,
+            folder: deck.routeFolder,
+            name: name,
+          );
+      ref.invalidate(cardsProvider);
+      ref.invalidate(pendingSyncProvider);
+      ref
+          .read(syncControllerProvider.notifier)
+          .scheduleSync(reason: 'deck-rename');
+      if (context.mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('牌组已重命名，已更新 $count 张卡牌，等待同步。')));
+      }
+    } catch (error) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('重命名失败：$error')));
+      }
+    }
+  }
+
+  Future<void> _deleteDeck(
+    BuildContext context,
+    WidgetRef ref,
+    _DeckSummary deck,
+  ) async {
+    final confirmed = await showDeleteResourceDialog(
+      context,
+      title: '删除这个牌组？',
+      message: '牌组中的 ${deck.cards.length} 张卡牌会从本地移除，并在下次同步时从其他设备删除。',
+    );
+    if (!confirmed || !context.mounted) return;
+    try {
+      final count = await ref
+          .read(contentRepositoryProvider)
+          .deleteDeck(
+            accountId: deck.cards.first.accountId,
+            folder: deck.routeFolder,
+          );
+      ref.invalidate(cardsProvider);
+      ref.invalidate(pendingSyncProvider);
+      ref
+          .read(syncControllerProvider.notifier)
+          .scheduleSync(reason: 'deck-delete');
+      if (context.mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('已删除 $count 张卡牌，等待同步。')));
+      }
+    } catch (error) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('删除失败：$error')));
+      }
+    }
+  }
 
   static int _cardCount(List<_DeckSummary> decks) {
     return decks.fold(0, (total, deck) => total + deck.cards.length);
@@ -555,75 +709,76 @@ class _ResourceRow extends StatelessWidget {
   final _ResourceEntry entry;
 
   @override
-  Widget build(BuildContext context) => Material(
-    color: Colors.transparent,
-    child: InkWell(
-      onTap: entry.onTap,
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(14, 13, 12, 13),
-        child: Row(
-          children: [
-            Container(
-              width: 46,
-              height: 46,
-              decoration: BoxDecoration(
-                color: entry.iconBackground,
-                borderRadius: BorderRadius.circular(15),
-              ),
-              child: Icon(entry.icon, color: entry.iconColor, size: 23),
+  Widget build(BuildContext context) => SwipeActionTile(
+    onTap: entry.onTap,
+    onRename: entry.onRename,
+    onDelete: entry.onDelete,
+    borderRadius: BorderRadius.zero,
+    boxShadow: const [],
+    child: Padding(
+      padding: const EdgeInsets.fromLTRB(14, 13, 12, 13),
+      child: Row(
+        children: [
+          Container(
+            width: 46,
+            height: 46,
+            decoration: BoxDecoration(
+              color: entry.iconBackground,
+              borderRadius: BorderRadius.circular(15),
             ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    entry.title,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                      color: AppVisualColors.ink,
-                      fontSize: 15,
-                      fontWeight: FontWeight.w700,
-                      height: 1.25,
-                    ),
-                  ),
-                  const SizedBox(height: 5),
-                  Text(
-                    entry.subtitle,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                      color: AppVisualColors.muted,
-                      fontSize: 12,
-                      height: 1.2,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(width: 8),
-            Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              crossAxisAlignment: CrossAxisAlignment.end,
+            child: Icon(entry.icon, color: entry.iconColor, size: 23),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  DateFormat('MM-dd').format(entry.updatedAt.toLocal()),
+                  entry.title,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: AppVisualColors.ink,
+                    fontSize: 15,
+                    fontWeight: FontWeight.w700,
+                    height: 1.25,
+                  ),
+                ),
+                const SizedBox(height: 5),
+                Text(
+                  entry.subtitle,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                   style: const TextStyle(
                     color: AppVisualColors.muted,
                     fontSize: 12,
+                    height: 1.2,
                   ),
-                ),
-                const SizedBox(height: 4),
-                const Icon(
-                  Icons.chevron_right_rounded,
-                  color: AppVisualColors.muted,
-                  size: 19,
                 ),
               ],
             ),
-          ],
-        ),
+          ),
+          const SizedBox(width: 8),
+          Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              Text(
+                DateFormat('MM-dd').format(entry.updatedAt.toLocal()),
+                style: const TextStyle(
+                  color: AppVisualColors.muted,
+                  fontSize: 12,
+                ),
+              ),
+              const SizedBox(height: 4),
+              const Icon(
+                Icons.chevron_right_rounded,
+                color: AppVisualColors.muted,
+                size: 19,
+              ),
+            ],
+          ),
+        ],
       ),
     ),
   );
@@ -638,6 +793,8 @@ class _ResourceEntry {
     required this.iconColor,
     required this.iconBackground,
     required this.onTap,
+    required this.onRename,
+    required this.onDelete,
   });
 
   final String title;
@@ -647,6 +804,8 @@ class _ResourceEntry {
   final Color iconColor;
   final Color iconBackground;
   final VoidCallback onTap;
+  final VoidCallback onRename;
+  final VoidCallback onDelete;
 }
 
 class _DeckSummary {

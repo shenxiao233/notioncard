@@ -127,6 +127,144 @@ void main() {
   );
 
   test(
+    'renaming a large deck updates cards locally but queues one deck mutation',
+    () async {
+      final now = DateTime(2026, 8, 1);
+      final cards = List.generate(
+        1210,
+        (index) => _buildLargeDeckCard(index, now),
+      );
+      await database.saveCards(cards);
+      final persistedUpdatedAt = {
+        for (final card in await database.loadCards('account-1'))
+          card.id: card.updatedAt,
+      };
+      await database.saveReviewEvent(
+        _reviewEvent(cards.first, now, 'rename-event-1'),
+      );
+
+      final renamed = await ContentRepository(database).renameDeck(
+        accountId: 'account-1',
+        folder: 'large-deck',
+        name: 'renamed-deck',
+      );
+
+      expect(renamed, 1210);
+      final savedCards = await database.loadCards('account-1');
+      final savedEvents = await database.loadReviewEvents('account-1');
+      final pending = await database.loadPendingSync('account-1');
+      final payload =
+          jsonDecode(pending.single.payload) as Map<String, dynamic>;
+
+      expect(savedCards, hasLength(1210));
+      expect(savedCards.every((card) => card.folder == 'renamed-deck'), isTrue);
+      expect(
+        savedCards.every(
+          (card) => card.updatedAt == persistedUpdatedAt[card.id],
+        ),
+        isTrue,
+      );
+      expect(savedEvents.single.folder, 'renamed-deck');
+      expect(pending, hasLength(1));
+      expect(pending.single.objectType, 'DECK');
+      expect(pending.single.objectId, startsWith('local-deck-'));
+      expect(payload['id'], pending.single.objectId);
+      expect(payload['title'], 'renamed-deck');
+      expect(payload['folder'], 'renamed-deck');
+      expect(payload['renameFrom'], 'large-deck');
+      expect(payload['cardCount'], 1210);
+    },
+  );
+
+  test(
+    'repeated offline deck renames keep one mutation and the original source',
+    () async {
+      final now = DateTime(2026, 8, 1);
+      await database.saveCards([
+        _buildLargeDeckCard(0, now),
+        _buildLargeDeckCard(1, now.add(const Duration(microseconds: 1))),
+      ]);
+      final repository = ContentRepository(database);
+
+      await repository.renameDeck(
+        accountId: 'account-1',
+        folder: 'large-deck',
+        name: 'middle-deck',
+      );
+      await repository.renameDeck(
+        accountId: 'account-1',
+        folder: 'middle-deck',
+        name: 'final-deck',
+      );
+
+      final pending = await database.loadPendingSync('account-1');
+      final payload =
+          jsonDecode(pending.single.payload) as Map<String, dynamic>;
+
+      expect(pending, hasLength(1));
+      expect(pending.single.objectType, 'DECK');
+      expect(payload['title'], 'final-deck');
+      expect(payload['folder'], 'final-deck');
+      expect(payload['renameFrom'], 'large-deck');
+      expect(payload['cardCount'], 2);
+      expect(
+        (await database.loadCards(
+          'account-1',
+        )).every((card) => card.folder == 'final-deck'),
+        isTrue,
+      );
+    },
+  );
+
+  test(
+    'deleting a deck discards card mutations and queues one deck tombstone',
+    () async {
+      final now = DateTime(2026, 8, 1);
+      final cards = List.generate(
+        3,
+        (index) => _buildLargeDeckCard(index, now),
+      );
+      await database.saveCards(cards);
+      await database.saveReviewEvent(
+        _reviewEvent(cards.first, now, 'delete-event-1'),
+      );
+      await database.enqueueSyncItems(
+        cards.map(
+          (card) => SyncQueueItemModel(
+            id: 'card-mutation-${card.id}',
+            accountId: card.accountId,
+            objectType: 'CARD',
+            objectId: card.id,
+            operation: SyncOperation.upsert,
+            payload: '{}',
+            status: SyncItemStatus.pending,
+            attempts: 0,
+            lastError: null,
+            createdAt: now,
+            updatedAt: now,
+          ),
+        ),
+      );
+
+      final count = await ContentRepository(
+        database,
+      ).deleteDeck(accountId: 'account-1', folder: 'large-deck');
+
+      final pending = await database.loadPendingSync('account-1');
+      final payload =
+          jsonDecode(pending.single.payload) as Map<String, dynamic>;
+      expect(count, 3);
+      expect(await database.loadCards('account-1'), isEmpty);
+      expect(await database.loadReviewEvents('account-1'), isEmpty);
+      expect(pending, hasLength(1));
+      expect(pending.single.objectType, 'DECK');
+      expect(pending.single.operation, SyncOperation.delete);
+      expect(payload['folder'], 'large-deck');
+      expect(payload['cardCount'], 3);
+    },
+  );
+
+  test(
     'coalesces multiple reviews of one card into one pending snapshot',
     () async {
       final now = DateTime(2026, 8, 1);
@@ -153,6 +291,35 @@ void main() {
       expect(pending.single.id, startsWith('card-upsert-${card.id}-'));
       expect(payload['reviews'], 2);
       expect(payload['eventId'], 'event-2');
+    },
+  );
+
+  test(
+    'concurrent queue replacements leave one snapshot per object',
+    () async {
+      final now = DateTime(2026, 8, 1);
+      await Future.wait(
+        List.generate(
+          20,
+          (index) => database.enqueueSync(
+            SyncQueueItemModel(
+              id: 'settings-mutation-$index-00000000',
+              accountId: 'account-1',
+              objectType: 'SETTINGS',
+              objectId: 'review',
+              operation: SyncOperation.upsert,
+              payload: '{"value":$index}',
+              status: SyncItemStatus.pending,
+              attempts: 0,
+              lastError: null,
+              createdAt: now.add(Duration(microseconds: index)),
+              updatedAt: now.add(Duration(microseconds: index)),
+            ),
+          ),
+        ),
+      );
+
+      expect(await database.loadPendingSync('account-1'), hasLength(1));
     },
   );
 
@@ -304,6 +471,39 @@ void main() {
       expect(queued.objectType, 'CARD');
       expect(queued.objectId, card.id);
       expect(queued.operation, SyncOperation.upsert);
+    },
+  );
+
+  test(
+    'reimporting a deck repairs legacy card positions without progress loss',
+    () async {
+      final repository = ContentRepository(database);
+      final first = _buildImportCard(
+        'market-deck-2-1',
+        'first',
+      ).copyWith(reviews: 4, mastery: 'familiar');
+      final second = _buildImportCard('market-deck-2-2', 'second');
+      await database.saveCards([first, second]);
+
+      final result = await repository.importCards('account-1', [
+        first.copyWith(sortOrder: 2),
+        second.copyWith(sortOrder: 1),
+      ]);
+
+      final saved = await database.loadCards('account-1');
+      final pending = await database.loadPendingSync('account-1');
+      expect(result.imported, 0);
+      expect(result.updated, 2);
+      expect(result.skipped, 0);
+      expect(saved.firstWhere((card) => card.id == first.id).sortOrder, 2);
+      expect(saved.firstWhere((card) => card.id == first.id).reviews, 4);
+      expect(
+        saved.firstWhere((card) => card.id == first.id).mastery,
+        'familiar',
+      );
+      // Order is derived from the downloaded package and is repaired locally;
+      // it must not create one CARD mutation per existing card.
+      expect(pending, isEmpty);
     },
   );
 }

@@ -157,6 +157,74 @@ void main() {
     );
   });
 
+  test('does not split non-retryable HTTP failures', () async {
+    final adapter = _QueueAdapter([
+      _FakeResponse.json({'message': 'Unauthorized'}, statusCode: 401),
+    ]);
+    final coordinator = _buildCoordinator(database, preferences, adapter);
+    final now = DateTime(2026, 8, 2);
+    for (var index = 0; index < 2; index++) {
+      await database.enqueueSync(
+        _buildQueueItem(
+          'mutation-card-$index-00000000',
+          now,
+          objectId: 'card-$index',
+        ),
+      );
+    }
+
+    final report = await coordinator.sync('account-1');
+
+    expect(report.synced, 0);
+    expect(report.failed, 2);
+    expect(adapter.requests, hasLength(1));
+  });
+
+  test('keeps a successful split half when the other half fails', () async {
+    final retryableFailure = _FakeResponse.json({
+      'message': 'Service temporarily unavailable',
+    }, statusCode: 503);
+    final adapter = _QueueAdapter([
+      retryableFailure,
+      retryableFailure,
+      retryableFailure,
+      _FakeResponse.json({
+        'responses': [
+          {
+            'objectType': 'CARD',
+            'objectId': 'card-0',
+            'serverVersion': 2,
+            'conflict': false,
+          },
+        ],
+      }),
+      retryableFailure,
+      retryableFailure,
+      retryableFailure,
+    ]);
+    final coordinator = _buildCoordinator(database, preferences, adapter);
+    final now = DateTime(2026, 8, 2);
+    for (var index = 0; index < 2; index++) {
+      await database.enqueueSync(
+        _buildQueueItem(
+          'mutation-card-$index-11111111',
+          now,
+          objectId: 'card-$index',
+        ),
+      );
+    }
+
+    final report = await coordinator.sync('account-1');
+    final items = await database.loadPendingSync('account-1');
+
+    expect(report.synced, 1);
+    expect(report.failed, 1);
+    expect(adapter.requests, hasLength(7));
+    expect(items, hasLength(1));
+    expect(items.single.objectId, 'card-1');
+    expect(items.single.status, SyncItemStatus.failed);
+  });
+
   test(
     'pushPending only uploads local changes without a pull request',
     () async {
@@ -184,6 +252,99 @@ void main() {
       expect(adapter.requests.single.path, '/api/v2/sync/batch');
     },
   );
+
+  test(
+    'checks the account revision through the lightweight status endpoint',
+    () async {
+      await preferences.setString('sync.revision.account-1', '12');
+      final adapter = _QueueAdapter([
+        _FakeResponse.json({'revision': '12', 'changed': false}),
+      ]);
+      final coordinator = _buildCoordinator(database, preferences, adapter);
+
+      final status = await coordinator.checkSyncStatus('account-1');
+
+      expect(status.supported, isTrue);
+      expect(status.changed, isFalse);
+      expect(status.revision, '12');
+      expect(adapter.requests.single.path, '/api/v2/sync/status');
+      expect(adapter.requests.single.queryParameters['revision'], '12');
+    },
+  );
+
+  test('retries a transient sync status failure', () async {
+    await preferences.setString('sync.revision.account-1', '12');
+    final adapter = _QueueAdapter([
+      _FakeResponse.json({
+        'message': 'Service temporarily unavailable',
+      }, statusCode: 503),
+      _FakeResponse.json({'revision': '12', 'changed': false}),
+    ]);
+    final coordinator = _buildCoordinator(database, preferences, adapter);
+
+    final status = await coordinator.checkSyncStatus('account-1');
+
+    expect(status.changed, isFalse);
+    expect(adapter.requests, hasLength(2));
+  });
+
+  test('retries a transient full sync page failure', () async {
+    final adapter = _QueueAdapter([
+      _FakeResponse.json({'message': 'Gateway timeout'}, statusCode: 504),
+      _FakeResponse.json({'objects': []}),
+    ]);
+    final coordinator = _buildCoordinator(database, preferences, adapter);
+
+    final report = await coordinator.fullSync('account-1');
+
+    expect(report.cards, 0);
+    expect(adapter.requests, hasLength(2));
+    expect(adapter.requests.last.path, '/api/v2/sync/full');
+  });
+
+  test(
+    'sends and persists the account revision around a pending batch',
+    () async {
+      await preferences.setString('sync.revision.account-1', '12');
+      final adapter = _QueueAdapter([
+        _FakeResponse.json({
+          'syncRevision': '13',
+          'remoteChanged': false,
+          'responses': [
+            {
+              'objectType': 'CARD',
+              'objectId': 'card-1',
+              'serverVersion': 2,
+              'conflict': false,
+            },
+          ],
+        }),
+      ]);
+      final coordinator = _buildCoordinator(database, preferences, adapter);
+      await database.enqueueSync(
+        _buildQueueItem('mutation-card-1-revision', DateTime(2026, 8, 2)),
+      );
+
+      final report = await coordinator.pushPending('account-1');
+      final body = adapter.requests.single.data as Map<String, dynamic>;
+
+      expect(body['baseRevision'], '12');
+      expect(report.syncRevision, '13');
+      expect(report.remoteChanged, isFalse);
+      expect(preferences.getString('sync.revision.account-1'), '13');
+    },
+  );
+
+  test('persists the revision returned by a completed full pull', () async {
+    final adapter = _QueueAdapter([
+      _FakeResponse.json({'syncRevision': '44', 'objects': []}),
+    ]);
+    final coordinator = _buildCoordinator(database, preferences, adapter);
+
+    await coordinator.fullSync('account-1');
+
+    expect(preferences.getString('sync.revision.account-1'), '44');
+  });
 
   test(
     'preserves local review progress and retries a stale card conflict',
@@ -372,16 +533,232 @@ void main() {
     expect(coordinator.needsInitialFullSync('account-1'), isTrue);
     await coordinator.fullSync('account-1');
     expect(coordinator.needsInitialFullSync('account-1'), isFalse);
-    expect(
-      adapter.requests.single.queryParameters['limit'],
-      500,
-    );
+    expect(adapter.requests.single.queryParameters['limit'], 1000);
 
     await coordinator.fullSync('account-1');
     expect(
       adapter.requests[1].queryParameters['lastSyncAt'],
       '2026-08-02T00:00:00.000Z',
     );
+    expect(adapter.requests[1].queryParameters['progressOnly'], 'true');
+  });
+
+  test(
+    'merges a progress-only pull without replacing local card content',
+    () async {
+      final local = _buildCard('card-1', folder: 'deck-1');
+      await database.saveCard(local);
+      await preferences.setString(
+        'sync.last_sync.account-1',
+        '2026-08-02T00:00:00.000Z',
+      );
+      await preferences.setString('sync.full_sync_version.account-1', '3');
+
+      final dueAt = DateTime(2026, 8, 5);
+      final adapter = _QueueAdapter([
+        _FakeResponse.json({
+          'syncTime': '2026-08-03T00:00:00.000Z',
+          'objects': [
+            {
+              'objectType': 'CARD',
+              'objectId': 'card-1',
+              'objectVersion': 4,
+              'data': {
+                'id': 'card-1',
+                'syncMode': 'progress',
+                'dueAt': dueAt.toIso8601String(),
+                'updatedAt': dueAt.toIso8601String(),
+                'reviews': 3,
+                'mastery': 'familiar',
+                'suspended': false,
+                'fsrs': {
+                  'state': 'review',
+                  'dueAt': dueAt.toIso8601String(),
+                  'stability': 4.0,
+                  'difficulty': 3.0,
+                  'reps': 3,
+                  'lapses': 0,
+                },
+              },
+            },
+          ],
+        }),
+      ]);
+      final coordinator = _buildCoordinator(database, preferences, adapter);
+
+      final report = await coordinator.fullSync('account-1');
+      final saved = (await database.loadCards('account-1')).single;
+
+      expect(report.cards, 1);
+      expect(saved.question, local.question);
+      expect(saved.options, local.options);
+      expect(saved.reviews, 3);
+      expect(saved.mastery, 'familiar');
+      expect(saved.fsrs.state, FsrsState.review);
+      expect(adapter.requests.single.queryParameters['progressOnly'], 'true');
+    },
+  );
+
+  test(
+    'fetches changed card content by hash in a separate chunked request',
+    () async {
+      final local = _buildCard('card-1', folder: 'deck-1');
+      await database.saveCard(local);
+      await preferences.setString(
+        'sync.last_sync.account-1',
+        '2026-08-02T00:00:00.000Z',
+      );
+      await preferences.setString('sync.full_sync_version.account-1', '3');
+      await preferences.setString(
+        'sync.card_content_hashes.account-1',
+        jsonEncode({'card-1': 'old-hash'}),
+      );
+
+      final adapter = _QueueAdapter([
+        _FakeResponse.json({
+          'syncTime': '2026-08-03T00:00:00.000Z',
+          'objects': [
+            {
+              'objectType': 'CARD',
+              'objectId': 'card-1',
+              'objectVersion': 4,
+              'contentHash': 'new-hash',
+              'contentIncluded': false,
+              'data': null,
+            },
+          ],
+        }),
+        _FakeResponse.json({
+          'objects': [
+            {
+              'objectType': 'CARD',
+              'objectId': 'card-1',
+              'objectVersion': 4,
+              'contentHash': 'new-hash',
+              'data': {
+                'id': 'card-1',
+                'folder': 'deck-1',
+                'question': 'updated question',
+                'options': {'A': 'answer'},
+                'answer': ['A'],
+                'noteContent': '',
+                'explanation': 'updated explanation',
+                'tags': [],
+                'dueAt': '2026-08-05T00:00:00.000Z',
+                'createdAt': '2026-08-01T00:00:00.000Z',
+                'updatedAt': '2026-08-03T00:00:00.000Z',
+                'reviews': 0,
+                'mastery': '',
+                'suspended': false,
+                'fsrs': {
+                  'state': 'newCard',
+                  'dueAt': '2026-08-05T00:00:00.000Z',
+                  'stability': 0,
+                  'difficulty': 0,
+                  'reps': 0,
+                  'lapses': 0,
+                },
+              },
+            },
+          ],
+        }),
+      ]);
+      final coordinator = _buildCoordinator(database, preferences, adapter);
+
+      final report = await coordinator.fullSync('account-1');
+      final saved = (await database.loadCards('account-1')).single;
+
+      expect(report.cards, 1);
+      expect(saved.question, 'updated question');
+      expect(saved.explanation, 'updated explanation');
+      expect(adapter.requests, hasLength(2));
+      expect(adapter.requests.first.path, '/api/v2/sync/full');
+      expect(adapter.requests.first.queryParameters['contentMode'], 'manifest');
+      expect(adapter.requests[1].path, '/api/v2/sync/content');
+      expect(adapter.requests[1].queryParameters['ids'], 'card-1');
+      expect(
+        preferences.getString('sync.card_content_hashes.account-1'),
+        jsonEncode({'card-1': 'new-hash'}),
+      );
+    },
+  );
+
+  test('applies a remote deck rename after loading its local cards', () async {
+    final card = _buildCard('card-renamed', folder: 'old-deck');
+    await database.saveCard(card);
+    await database.saveReviewEvent(
+      ReviewEventModel(
+        id: 'remote-rename-event',
+        accountId: card.accountId,
+        cardId: card.id,
+        question: card.question,
+        folder: 'old-deck',
+        rating: ReviewRating.good,
+        reviewedAt: DateTime(2026, 8, 1),
+        nextDue: DateTime(2026, 8, 2),
+      ),
+    );
+    final adapter = _QueueAdapter([
+      _FakeResponse.json({
+        'syncTime': '2026-08-02T00:00:00.000Z',
+        'objects': [
+          {
+            'objectType': 'DECK',
+            'objectId': 'deck-1',
+            'objectVersion': 2,
+            'data': {
+              'id': 'deck-1',
+              'title': 'new-deck',
+              'folder': 'new-deck',
+              'renameFrom': 'old-deck',
+              'updatedAt': '2026-08-02T00:00:00.000Z',
+            },
+          },
+        ],
+      }),
+    ]);
+    final coordinator = _buildCoordinator(database, preferences, adapter);
+
+    final report = await coordinator.fullSync('account-1');
+
+    expect(report.decks, 1);
+    expect((await database.loadCards('account-1')).single.folder, 'new-deck');
+    expect(
+      (await database.loadReviewEvents('account-1')).single.folder,
+      'new-deck',
+    );
+    expect(
+      preferences.getString('sync.deck.local.name.account-1.bmV3LWRlY2s='),
+      'deck-1',
+    );
+  });
+
+  test('hydrates the desktop card order during a full sync', () async {
+    final local = _buildCard('card-ordered', folder: 'deck-ordered');
+    final remote = cardSyncPayload(local)
+      ..['question'] = '源远流长'
+      ..['order'] = 1;
+    final adapter = _QueueAdapter([
+      _FakeResponse.json({
+        'syncTime': '2026-08-02T00:00:00.000Z',
+        'objects': [
+          {
+            'objectType': 'CARD',
+            'objectId': local.id,
+            'objectVersion': 3,
+            'data': remote,
+          },
+        ],
+      }),
+    ]);
+    final coordinator = _buildCoordinator(database, preferences, adapter);
+
+    await coordinator.fullSync('account-1', force: true);
+
+    final saved = (await database.loadCards('account-1')).single;
+    expect(saved.question, '源远流长');
+    expect(saved.sortOrder, 1);
+    expect(preferences.getString('sync.card_order_version.account-1'), '1');
   });
 
   test(
@@ -691,20 +1068,27 @@ class _QueueAdapter implements HttpClientAdapter {
 }
 
 class _FakeResponse {
-  const _FakeResponse(this.body, this.contentType);
+  const _FakeResponse(this.body, this.contentType, {this.statusCode = 200});
 
-  factory _FakeResponse.json(Map<String, dynamic> body) =>
-      _FakeResponse(jsonEncode(body), Headers.jsonContentType);
+  factory _FakeResponse.json(
+    Map<String, dynamic> body, {
+    int statusCode = 200,
+  }) => _FakeResponse(
+    jsonEncode(body),
+    Headers.jsonContentType,
+    statusCode: statusCode,
+  );
 
   factory _FakeResponse.text(String body) =>
       _FakeResponse(body, Headers.textPlainContentType);
 
   final String body;
   final String contentType;
+  final int statusCode;
 
   ResponseBody toBody() => ResponseBody.fromString(
     body,
-    200,
+    statusCode,
     headers: {
       Headers.contentTypeHeader: [contentType],
     },

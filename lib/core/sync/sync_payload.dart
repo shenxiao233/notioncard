@@ -30,6 +30,13 @@ Map<String, dynamic> cardSyncPayload(
       'lapses': card.fsrs.lapses,
     },
   };
+  if (card.sortOrder != null) {
+    // `order` is the field used by the desktop client. Keep the Flutter
+    // spelling too so newer clients can be explicit without breaking older
+    // desktop clients.
+    payload['sortOrder'] = card.sortOrder;
+    payload['order'] = card.sortOrder;
+  }
   if (progressReset) payload['progressReset'] = true;
   if (progressOnly) payload['syncMode'] = 'progress';
   return payload;

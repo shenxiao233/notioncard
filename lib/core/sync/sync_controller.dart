@@ -218,6 +218,7 @@ class SyncController extends StateNotifier<SyncUiState> {
     try {
       final pendingBefore = await _coordinator.pendingCount(account.id);
       var report = const SyncReport();
+      final requiresInitialPull = _coordinator.needsInitialFullSync(account.id);
 
       // Flush local changes first. This keeps the user's latest FSRS snapshot
       // ahead of a pull and lets the server return the current version for
@@ -233,22 +234,38 @@ class SyncController extends StateNotifier<SyncUiState> {
       }
       // Pulling is an explicit phase. Review sessions use pushPending(), so
       // they never perform a remote pull or merge while the user is studying.
-      if (pullRemote) {
+      // Once the first pull has completed, use the account revision as a cheap
+      // change detector. A normal local edit can be acknowledged without
+      // downloading the whole account again.
+      var shouldPullRemote = pullRemote;
+      if (pullRemote && !requiresInitialPull) {
+        if (pendingBefore == 0) {
+          final status = await _coordinator.checkSyncStatus(account.id);
+          if (status.revision != null) {
+            await _coordinator.saveSyncRevision(account.id, status.revision);
+          }
+          shouldPullRemote = !status.supported || status.changed;
+        } else {
+          // A batch response carries the server revision it observed. If the
+          // server did not return that field (old deployment), keep the old
+          // safe behavior and pull once.
+          shouldPullRemote =
+              report.failed > 0 ||
+              report.remoteChanged ||
+              report.syncRevision == null;
+        }
+      }
+      if (shouldPullRemote) {
         await _coordinator.fullSync(
           account.id,
-          force: _coordinator.needsInitialFullSync(account.id),
+          force: requiresInitialPull,
           cancelToken: cancelToken,
         );
         final tailReport = await _coordinator.pushPending(
           account.id,
           cancelToken: cancelToken,
         );
-        report = SyncReport(
-          synced: report.synced + tailReport.synced,
-          failed: report.failed + tailReport.failed,
-          conflicts: report.conflicts + tailReport.conflicts,
-          networkFailure: tailReport.networkFailure,
-        );
+        report = _mergeReports(report, tailReport);
       }
       if (!_isCurrent(generation, cancelToken)) return;
 
@@ -283,6 +300,27 @@ class SyncController extends StateNotifier<SyncUiState> {
     } finally {
       if (identical(_cancelToken, cancelToken)) _cancelToken = null;
     }
+  }
+
+  SyncReport _mergeReports(SyncReport first, SyncReport second) {
+    return SyncReport(
+      synced: first.synced + second.synced,
+      failed: first.failed + second.failed,
+      conflicts: first.conflicts + second.conflicts,
+      networkFailure: first.networkFailure || second.networkFailure,
+      syncRevision: _latestRevision(first.syncRevision, second.syncRevision),
+      remoteChanged: first.remoteChanged || second.remoteChanged,
+    );
+  }
+
+  String? _latestRevision(String? first, String? second) {
+    if (first == null || first.isEmpty) return second;
+    if (second == null || second.isEmpty) return first;
+    final firstValue = BigInt.tryParse(first);
+    final secondValue = BigInt.tryParse(second);
+    if (firstValue == null) return second;
+    if (secondValue == null) return first;
+    return secondValue > firstValue ? second : first;
   }
 
   bool _isCurrent(int generation, CancelToken cancelToken) =>

@@ -7,6 +7,7 @@ import '../../core/models/card_model.dart';
 import '../../core/widgets/app_visuals.dart';
 import '../../core/widgets/empty_state.dart';
 import '../../core/widgets/markdown_content.dart';
+import '../review/review_queue.dart';
 
 class CardDetailPage extends ConsumerWidget {
   const CardDetailPage({required this.cardId, super.key});
@@ -90,10 +91,7 @@ class CardDetailPage extends ConsumerWidget {
     String folder,
   ) {
     final deckCards = cards.where((card) => card.folder == folder).toList()
-      ..sort((left, right) {
-        final created = left.createdAt.compareTo(right.createdAt);
-        return created == 0 ? left.id.compareTo(right.id) : created;
-      });
+      ..sort(compareCardOrder);
     return deckCards;
   }
 }

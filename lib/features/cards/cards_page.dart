@@ -7,6 +7,8 @@ import '../../core/models/card_model.dart';
 import '../../core/widgets/app_layout.dart';
 import '../../core/widgets/app_visuals.dart';
 import '../../core/widgets/empty_state.dart';
+import '../../core/widgets/resource_action_dialogs.dart';
+import '../../core/widgets/swipe_action_tile.dart';
 
 enum _CardSort { due, recent, reviews, created }
 
@@ -53,7 +55,12 @@ class CardsPage extends ConsumerWidget {
                   )
                 else
                   ..._groupCards(values).entries.map(
-                    (entry) => _DeckTile(folder: entry.key, cards: entry.value),
+                    (entry) => _DeckTile(
+                      folder: entry.key,
+                      cards: entry.value,
+                      onRename: () => _renameDeck(context, ref, entry.key),
+                      onDelete: () => _deleteDeck(context, ref, entry.key),
+                    ),
                   ),
               ],
             ),
@@ -69,6 +76,88 @@ class CardsPage extends ConsumerWidget {
         .sync(reason: 'cards-refresh');
     ref.invalidate(cardsProvider);
     await ref.read(cardsProvider.future);
+  }
+
+  Future<void> _renameDeck(
+    BuildContext context,
+    WidgetRef ref,
+    String folder,
+  ) async {
+    final name = await showRenameResourceDialog(
+      context,
+      title: '重命名牌组',
+      initialValue: folder,
+      hintText: '输入牌组名称',
+    );
+    if (name == null || !context.mounted) return;
+    try {
+      final count = await ref
+          .read(contentRepositoryProvider)
+          .renameDeck(
+            accountId: ref.read(currentAccountProvider)!.id,
+            folder: folder,
+            name: name,
+          );
+      ref.invalidate(cardsProvider);
+      ref.invalidate(pendingSyncProvider);
+      ref
+          .read(syncControllerProvider.notifier)
+          .scheduleSync(reason: 'deck-rename');
+      if (context.mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('牌组已重命名，已更新 $count 张卡牌，等待同步。')));
+      }
+    } catch (error) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('重命名失败：$error')));
+      }
+    }
+  }
+
+  Future<void> _deleteDeck(
+    BuildContext context,
+    WidgetRef ref,
+    String folder,
+  ) async {
+    final cards = await ref.read(cardsProvider.future);
+    final count = cards.where((card) {
+      final cardFolder = card.folder.trim();
+      return folder == '未分类' ? cardFolder.isEmpty : cardFolder == folder.trim();
+    }).length;
+    if (!context.mounted) return;
+    final confirmed = await showDeleteResourceDialog(
+      context,
+      title: '删除这个牌组？',
+      message: '牌组中的 $count 张卡牌会从本地移除，并在下次同步时从其他设备删除。',
+    );
+    if (!confirmed || !context.mounted) return;
+    try {
+      final deleted = await ref
+          .read(contentRepositoryProvider)
+          .deleteDeck(
+            accountId: ref.read(currentAccountProvider)!.id,
+            folder: folder,
+          );
+      ref.invalidate(cardsProvider);
+      ref.invalidate(pendingSyncProvider);
+      ref
+          .read(syncControllerProvider.notifier)
+          .scheduleSync(reason: 'deck-delete');
+      if (context.mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('已删除 $deleted 张卡牌，等待同步。')));
+      }
+    } catch (error) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('删除失败：$error')));
+      }
+    }
   }
 
   static Map<String, List<CardModel>> _groupCards(List<CardModel> cards) {
@@ -354,6 +443,9 @@ class _DeckCardsPageState extends ConsumerState<DeckCardsPage> {
       await ref.read(contentRepositoryProvider).createCard(card);
       ref.invalidate(cardsProvider);
       ref.invalidate(pendingSyncProvider);
+      ref
+          .read(syncControllerProvider.notifier)
+          .scheduleSync(reason: 'card-create');
       if (mounted) {
         ScaffoldMessenger.of(
           context,
@@ -389,6 +481,9 @@ class _DeckCardsPageState extends ConsumerState<DeckCardsPage> {
       await ref.read(contentRepositoryProvider).updateCard(updated);
       ref.invalidate(cardsProvider);
       ref.invalidate(pendingSyncProvider);
+      ref
+          .read(syncControllerProvider.notifier)
+          .scheduleSync(reason: 'card-update');
       if (mounted) {
         ScaffoldMessenger.of(
           context,
@@ -423,6 +518,9 @@ class _DeckCardsPageState extends ConsumerState<DeckCardsPage> {
         .deleteCard(accountId: account.id, cardId: card.id);
     ref.invalidate(cardsProvider);
     ref.invalidate(pendingSyncProvider);
+    ref
+        .read(syncControllerProvider.notifier)
+        .scheduleSync(reason: 'card-delete');
     if (mounted) {
       ScaffoldMessenger.of(
         context,
@@ -574,75 +672,73 @@ class _SummaryMetric extends StatelessWidget {
 }
 
 class _DeckTile extends StatelessWidget {
-  const _DeckTile({required this.folder, required this.cards});
+  const _DeckTile({
+    required this.folder,
+    required this.cards,
+    required this.onRename,
+    required this.onDelete,
+  });
 
   final String folder;
   final List<CardModel> cards;
+  final VoidCallback onRename;
+  final VoidCallback onDelete;
 
   @override
   Widget build(BuildContext context) {
     final due = cards.where((card) => card.isDue).length;
-    return Container(
+    return SwipeActionTile(
       margin: const EdgeInsets.only(bottom: 12),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(20),
-        boxShadow: appCardShadow,
-      ),
-      child: Material(
-        color: Colors.transparent,
-        child: InkWell(
-          onTap: () => context.push('/cards/deck', extra: folder),
-          borderRadius: BorderRadius.circular(20),
-          child: Padding(
-            padding: const EdgeInsets.all(14),
-            child: Row(
-              children: [
-                Container(
-                  width: 46,
-                  height: 46,
-                  decoration: const BoxDecoration(
-                    color: AppVisualColors.softGreen,
-                    shape: BoxShape.circle,
-                  ),
-                  child: const Icon(
-                    Icons.folder_copy_rounded,
-                    color: AppVisualColors.green,
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        folder,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          color: AppVisualColors.ink,
-                          fontSize: 15,
-                          fontWeight: FontWeight.w700,
-                        ),
-                      ),
-                      const SizedBox(height: 5),
-                      Text(
-                        '${cards.length} 张卡片 · $due 张待复习',
-                        style: const TextStyle(
-                          color: AppVisualColors.muted,
-                          fontSize: 12,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                const Icon(
-                  Icons.chevron_right_rounded,
-                  color: AppVisualColors.muted,
-                ),
-              ],
+      onTap: () => context.push('/cards/deck', extra: folder),
+      onRename: onRename,
+      onDelete: onDelete,
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Row(
+          children: [
+            Container(
+              width: 46,
+              height: 46,
+              decoration: const BoxDecoration(
+                color: AppVisualColors.softGreen,
+                shape: BoxShape.circle,
+              ),
+              child: const Icon(
+                Icons.folder_copy_rounded,
+                color: AppVisualColors.green,
+              ),
             ),
-          ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    folder,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      color: AppVisualColors.ink,
+                      fontSize: 15,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  const SizedBox(height: 5),
+                  Text(
+                    '${cards.length} 张卡片 · $due 张待复习',
+                    style: const TextStyle(
+                      color: AppVisualColors.muted,
+                      fontSize: 12,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const Icon(
+              Icons.chevron_right_rounded,
+              color: AppVisualColors.muted,
+            ),
+          ],
         ),
       ),
     );

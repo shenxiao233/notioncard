@@ -81,6 +81,7 @@ class CardModel {
     required this.tags,
     required this.dueAt,
     required this.createdAt,
+    this.sortOrder,
     required this.updatedAt,
     required this.reviews,
     required this.mastery,
@@ -100,6 +101,11 @@ class CardModel {
   final List<String> tags;
   final DateTime dueAt;
   final DateTime createdAt;
+
+  /// Stable position within the source deck. This is intentionally separate
+  /// from [createdAt], which is a timestamp and cannot represent import order
+  /// reliably on every local database backend.
+  final int? sortOrder;
   final DateTime updatedAt;
   final int reviews;
   final String mastery;
@@ -109,9 +115,11 @@ class CardModel {
   bool get isDue => !suspended && !dueAt.isAfter(DateTime.now());
 
   CardModel copyWith({
+    String? folder,
     String? question,
     String? noteContent,
     DateTime? dueAt,
+    int? sortOrder,
     DateTime? updatedAt,
     int? reviews,
     String? mastery,
@@ -122,7 +130,7 @@ class CardModel {
       id: id,
       accountId: accountId,
       type: type,
-      folder: folder,
+      folder: folder ?? this.folder,
       question: question ?? this.question,
       options: options,
       answer: answer,
@@ -131,6 +139,7 @@ class CardModel {
       tags: tags,
       dueAt: dueAt ?? this.dueAt,
       createdAt: createdAt,
+      sortOrder: sortOrder ?? this.sortOrder,
       updatedAt: updatedAt ?? this.updatedAt,
       reviews: reviews ?? this.reviews,
       mastery: mastery ?? this.mastery,

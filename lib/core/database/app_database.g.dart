@@ -134,6 +134,17 @@ class $CardsTable extends Cards with TableInfo<$CardsTable, Card> {
     type: DriftSqlType.dateTime,
     requiredDuringInsert: true,
   );
+  static const VerificationMeta _sortOrderMeta = const VerificationMeta(
+    'sortOrder',
+  );
+  @override
+  late final GeneratedColumn<int> sortOrder = GeneratedColumn<int>(
+    'sort_order',
+    aliasedName,
+    true,
+    type: DriftSqlType.int,
+    requiredDuringInsert: false,
+  );
   static const VerificationMeta _updatedAtMeta = const VerificationMeta(
     'updatedAt',
   );
@@ -209,6 +220,7 @@ class $CardsTable extends Cards with TableInfo<$CardsTable, Card> {
     tagsJson,
     dueAt,
     createdAt,
+    sortOrder,
     updatedAt,
     reviews,
     mastery,
@@ -325,6 +337,12 @@ class $CardsTable extends Cards with TableInfo<$CardsTable, Card> {
     } else if (isInserting) {
       context.missing(_createdAtMeta);
     }
+    if (data.containsKey('sort_order')) {
+      context.handle(
+        _sortOrderMeta,
+        sortOrder.isAcceptableOrUnknown(data['sort_order']!, _sortOrderMeta),
+      );
+    }
     if (data.containsKey('updated_at')) {
       context.handle(
         _updatedAtMeta,
@@ -416,6 +434,10 @@ class $CardsTable extends Cards with TableInfo<$CardsTable, Card> {
         DriftSqlType.dateTime,
         data['${effectivePrefix}created_at'],
       )!,
+      sortOrder: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}sort_order'],
+      ),
       updatedAt: attachedDatabase.typeMapping.read(
         DriftSqlType.dateTime,
         data['${effectivePrefix}updated_at'],
@@ -458,6 +480,7 @@ class Card extends DataClass implements Insertable<Card> {
   final String tagsJson;
   final DateTime dueAt;
   final DateTime createdAt;
+  final int? sortOrder;
   final DateTime updatedAt;
   final int reviews;
   final String mastery;
@@ -476,6 +499,7 @@ class Card extends DataClass implements Insertable<Card> {
     required this.tagsJson,
     required this.dueAt,
     required this.createdAt,
+    this.sortOrder,
     required this.updatedAt,
     required this.reviews,
     required this.mastery,
@@ -497,6 +521,9 @@ class Card extends DataClass implements Insertable<Card> {
     map['tags_json'] = Variable<String>(tagsJson);
     map['due_at'] = Variable<DateTime>(dueAt);
     map['created_at'] = Variable<DateTime>(createdAt);
+    if (!nullToAbsent || sortOrder != null) {
+      map['sort_order'] = Variable<int>(sortOrder);
+    }
     map['updated_at'] = Variable<DateTime>(updatedAt);
     map['reviews'] = Variable<int>(reviews);
     map['mastery'] = Variable<String>(mastery);
@@ -519,6 +546,9 @@ class Card extends DataClass implements Insertable<Card> {
       tagsJson: Value(tagsJson),
       dueAt: Value(dueAt),
       createdAt: Value(createdAt),
+      sortOrder: sortOrder == null && nullToAbsent
+          ? const Value.absent()
+          : Value(sortOrder),
       updatedAt: Value(updatedAt),
       reviews: Value(reviews),
       mastery: Value(mastery),
@@ -545,6 +575,7 @@ class Card extends DataClass implements Insertable<Card> {
       tagsJson: serializer.fromJson<String>(json['tagsJson']),
       dueAt: serializer.fromJson<DateTime>(json['dueAt']),
       createdAt: serializer.fromJson<DateTime>(json['createdAt']),
+      sortOrder: serializer.fromJson<int?>(json['sortOrder']),
       updatedAt: serializer.fromJson<DateTime>(json['updatedAt']),
       reviews: serializer.fromJson<int>(json['reviews']),
       mastery: serializer.fromJson<String>(json['mastery']),
@@ -568,6 +599,7 @@ class Card extends DataClass implements Insertable<Card> {
       'tagsJson': serializer.toJson<String>(tagsJson),
       'dueAt': serializer.toJson<DateTime>(dueAt),
       'createdAt': serializer.toJson<DateTime>(createdAt),
+      'sortOrder': serializer.toJson<int?>(sortOrder),
       'updatedAt': serializer.toJson<DateTime>(updatedAt),
       'reviews': serializer.toJson<int>(reviews),
       'mastery': serializer.toJson<String>(mastery),
@@ -589,6 +621,7 @@ class Card extends DataClass implements Insertable<Card> {
     String? tagsJson,
     DateTime? dueAt,
     DateTime? createdAt,
+    Value<int?> sortOrder = const Value.absent(),
     DateTime? updatedAt,
     int? reviews,
     String? mastery,
@@ -607,6 +640,7 @@ class Card extends DataClass implements Insertable<Card> {
     tagsJson: tagsJson ?? this.tagsJson,
     dueAt: dueAt ?? this.dueAt,
     createdAt: createdAt ?? this.createdAt,
+    sortOrder: sortOrder.present ? sortOrder.value : this.sortOrder,
     updatedAt: updatedAt ?? this.updatedAt,
     reviews: reviews ?? this.reviews,
     mastery: mastery ?? this.mastery,
@@ -635,6 +669,7 @@ class Card extends DataClass implements Insertable<Card> {
       tagsJson: data.tagsJson.present ? data.tagsJson.value : this.tagsJson,
       dueAt: data.dueAt.present ? data.dueAt.value : this.dueAt,
       createdAt: data.createdAt.present ? data.createdAt.value : this.createdAt,
+      sortOrder: data.sortOrder.present ? data.sortOrder.value : this.sortOrder,
       updatedAt: data.updatedAt.present ? data.updatedAt.value : this.updatedAt,
       reviews: data.reviews.present ? data.reviews.value : this.reviews,
       mastery: data.mastery.present ? data.mastery.value : this.mastery,
@@ -658,6 +693,7 @@ class Card extends DataClass implements Insertable<Card> {
           ..write('tagsJson: $tagsJson, ')
           ..write('dueAt: $dueAt, ')
           ..write('createdAt: $createdAt, ')
+          ..write('sortOrder: $sortOrder, ')
           ..write('updatedAt: $updatedAt, ')
           ..write('reviews: $reviews, ')
           ..write('mastery: $mastery, ')
@@ -681,6 +717,7 @@ class Card extends DataClass implements Insertable<Card> {
     tagsJson,
     dueAt,
     createdAt,
+    sortOrder,
     updatedAt,
     reviews,
     mastery,
@@ -703,6 +740,7 @@ class Card extends DataClass implements Insertable<Card> {
           other.tagsJson == this.tagsJson &&
           other.dueAt == this.dueAt &&
           other.createdAt == this.createdAt &&
+          other.sortOrder == this.sortOrder &&
           other.updatedAt == this.updatedAt &&
           other.reviews == this.reviews &&
           other.mastery == this.mastery &&
@@ -723,6 +761,7 @@ class CardsCompanion extends UpdateCompanion<Card> {
   final Value<String> tagsJson;
   final Value<DateTime> dueAt;
   final Value<DateTime> createdAt;
+  final Value<int?> sortOrder;
   final Value<DateTime> updatedAt;
   final Value<int> reviews;
   final Value<String> mastery;
@@ -742,6 +781,7 @@ class CardsCompanion extends UpdateCompanion<Card> {
     this.tagsJson = const Value.absent(),
     this.dueAt = const Value.absent(),
     this.createdAt = const Value.absent(),
+    this.sortOrder = const Value.absent(),
     this.updatedAt = const Value.absent(),
     this.reviews = const Value.absent(),
     this.mastery = const Value.absent(),
@@ -762,6 +802,7 @@ class CardsCompanion extends UpdateCompanion<Card> {
     required String tagsJson,
     required DateTime dueAt,
     required DateTime createdAt,
+    this.sortOrder = const Value.absent(),
     required DateTime updatedAt,
     this.reviews = const Value.absent(),
     this.mastery = const Value.absent(),
@@ -793,6 +834,7 @@ class CardsCompanion extends UpdateCompanion<Card> {
     Expression<String>? tagsJson,
     Expression<DateTime>? dueAt,
     Expression<DateTime>? createdAt,
+    Expression<int>? sortOrder,
     Expression<DateTime>? updatedAt,
     Expression<int>? reviews,
     Expression<String>? mastery,
@@ -813,6 +855,7 @@ class CardsCompanion extends UpdateCompanion<Card> {
       if (tagsJson != null) 'tags_json': tagsJson,
       if (dueAt != null) 'due_at': dueAt,
       if (createdAt != null) 'created_at': createdAt,
+      if (sortOrder != null) 'sort_order': sortOrder,
       if (updatedAt != null) 'updated_at': updatedAt,
       if (reviews != null) 'reviews': reviews,
       if (mastery != null) 'mastery': mastery,
@@ -835,6 +878,7 @@ class CardsCompanion extends UpdateCompanion<Card> {
     Value<String>? tagsJson,
     Value<DateTime>? dueAt,
     Value<DateTime>? createdAt,
+    Value<int?>? sortOrder,
     Value<DateTime>? updatedAt,
     Value<int>? reviews,
     Value<String>? mastery,
@@ -855,6 +899,7 @@ class CardsCompanion extends UpdateCompanion<Card> {
       tagsJson: tagsJson ?? this.tagsJson,
       dueAt: dueAt ?? this.dueAt,
       createdAt: createdAt ?? this.createdAt,
+      sortOrder: sortOrder ?? this.sortOrder,
       updatedAt: updatedAt ?? this.updatedAt,
       reviews: reviews ?? this.reviews,
       mastery: mastery ?? this.mastery,
@@ -903,6 +948,9 @@ class CardsCompanion extends UpdateCompanion<Card> {
     if (createdAt.present) {
       map['created_at'] = Variable<DateTime>(createdAt.value);
     }
+    if (sortOrder.present) {
+      map['sort_order'] = Variable<int>(sortOrder.value);
+    }
     if (updatedAt.present) {
       map['updated_at'] = Variable<DateTime>(updatedAt.value);
     }
@@ -939,6 +987,7 @@ class CardsCompanion extends UpdateCompanion<Card> {
           ..write('tagsJson: $tagsJson, ')
           ..write('dueAt: $dueAt, ')
           ..write('createdAt: $createdAt, ')
+          ..write('sortOrder: $sortOrder, ')
           ..write('updatedAt: $updatedAt, ')
           ..write('reviews: $reviews, ')
           ..write('mastery: $mastery, ')
@@ -2606,6 +2655,7 @@ typedef $$CardsTableCreateCompanionBuilder =
       required String tagsJson,
       required DateTime dueAt,
       required DateTime createdAt,
+      Value<int?> sortOrder,
       required DateTime updatedAt,
       Value<int> reviews,
       Value<String> mastery,
@@ -2627,6 +2677,7 @@ typedef $$CardsTableUpdateCompanionBuilder =
       Value<String> tagsJson,
       Value<DateTime> dueAt,
       Value<DateTime> createdAt,
+      Value<int?> sortOrder,
       Value<DateTime> updatedAt,
       Value<int> reviews,
       Value<String> mastery,
@@ -2700,6 +2751,11 @@ class $$CardsTableFilterComposer extends Composer<_$AppDatabase, $CardsTable> {
 
   ColumnFilters<DateTime> get createdAt => $composableBuilder(
     column: $table.createdAt,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get sortOrder => $composableBuilder(
+    column: $table.sortOrder,
     builder: (column) => ColumnFilters(column),
   );
 
@@ -2798,6 +2854,11 @@ class $$CardsTableOrderingComposer
     builder: (column) => ColumnOrderings(column),
   );
 
+  ColumnOrderings<int> get sortOrder => $composableBuilder(
+    column: $table.sortOrder,
+    builder: (column) => ColumnOrderings(column),
+  );
+
   ColumnOrderings<DateTime> get updatedAt => $composableBuilder(
     column: $table.updatedAt,
     builder: (column) => ColumnOrderings(column),
@@ -2877,6 +2938,9 @@ class $$CardsTableAnnotationComposer
   GeneratedColumn<DateTime> get createdAt =>
       $composableBuilder(column: $table.createdAt, builder: (column) => column);
 
+  GeneratedColumn<int> get sortOrder =>
+      $composableBuilder(column: $table.sortOrder, builder: (column) => column);
+
   GeneratedColumn<DateTime> get updatedAt =>
       $composableBuilder(column: $table.updatedAt, builder: (column) => column);
 
@@ -2933,6 +2997,7 @@ class $$CardsTableTableManager
                 Value<String> tagsJson = const Value.absent(),
                 Value<DateTime> dueAt = const Value.absent(),
                 Value<DateTime> createdAt = const Value.absent(),
+                Value<int?> sortOrder = const Value.absent(),
                 Value<DateTime> updatedAt = const Value.absent(),
                 Value<int> reviews = const Value.absent(),
                 Value<String> mastery = const Value.absent(),
@@ -2952,6 +3017,7 @@ class $$CardsTableTableManager
                 tagsJson: tagsJson,
                 dueAt: dueAt,
                 createdAt: createdAt,
+                sortOrder: sortOrder,
                 updatedAt: updatedAt,
                 reviews: reviews,
                 mastery: mastery,
@@ -2973,6 +3039,7 @@ class $$CardsTableTableManager
                 required String tagsJson,
                 required DateTime dueAt,
                 required DateTime createdAt,
+                Value<int?> sortOrder = const Value.absent(),
                 required DateTime updatedAt,
                 Value<int> reviews = const Value.absent(),
                 Value<String> mastery = const Value.absent(),
@@ -2992,6 +3059,7 @@ class $$CardsTableTableManager
                 tagsJson: tagsJson,
                 dueAt: dueAt,
                 createdAt: createdAt,
+                sortOrder: sortOrder,
                 updatedAt: updatedAt,
                 reviews: reviews,
                 mastery: mastery,

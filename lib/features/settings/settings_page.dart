@@ -6,7 +6,6 @@ import 'package:intl/intl.dart';
 
 import '../../app/app_providers.dart';
 import '../../core/models/account_model.dart';
-import '../../core/sound/app_sound_settings.dart';
 import '../../core/widgets/app_layout.dart';
 import '../../core/sync/sync_controller.dart';
 import '../review/review_settings.dart';
@@ -97,7 +96,6 @@ class SettingsPage extends ConsumerWidget {
     final sync = ref.watch(syncControllerProvider);
     final pending = ref.watch(pendingSyncProvider).valueOrNull ?? sync.pending;
     final reviewSettings = ref.watch(reviewSettingsProvider);
-    final soundSettings = ref.watch(appSoundSettingsProvider);
 
     return Scaffold(
       backgroundColor: _ProfileColors.background,
@@ -222,9 +220,6 @@ class SettingsPage extends ConsumerWidget {
                           ref: ref,
                         ),
                         const SizedBox(height: 16),
-                        const _ProfileSectionHeader(title: '声音设置'),
-                        const SizedBox(height: 8),
-                        _SoundSettingsGroup(settings: soundSettings, ref: ref),
                         const SizedBox(height: 22),
                       ],
                     ),
@@ -278,6 +273,9 @@ class SettingsPage extends ConsumerWidget {
       await ref
           .read(reviewSettingsProvider.notifier)
           .setAutonomousLearning(enabled);
+      ref
+          .read(syncControllerProvider.notifier)
+          .scheduleSync(reason: 'review-settings-change');
     } catch (_) {
       if (context.mounted) {
         _showMessage(context, '保存设置失败，请稍后重试');
@@ -309,6 +307,9 @@ class SettingsPage extends ConsumerWidget {
       } else {
         await ref.read(reviewSettingsProvider.notifier).setReviewsPerDay(value);
       }
+      ref
+          .read(syncControllerProvider.notifier)
+          .scheduleSync(reason: 'review-settings-change');
     } catch (_) {
       if (context.mounted) {
         _showMessage(context, '保存设置失败，请稍后重试');
@@ -738,51 +739,6 @@ class _SyncGroup extends StatelessWidget {
     if (difference.inDays < 7) return '${difference.inDays} 天前';
     return DateFormat('yyyy-MM-dd HH:mm').format(value.toLocal());
   }
-}
-
-class _SoundSettingsGroup extends StatelessWidget {
-  const _SoundSettingsGroup({required this.settings, required this.ref});
-
-  final AppSoundSettings settings;
-  final WidgetRef ref;
-
-  @override
-  Widget build(BuildContext context) => _SettingsGroup(
-    children: [
-      _SettingsRow(
-        title: '界面音效',
-        subtitle: '复习、完成和同步时播放轻提示音',
-        trailing: Switch(
-          value: settings.enabled,
-          activeThumbColor: _ProfileColors.green,
-          onChanged: (value) =>
-              ref.read(appSoundSettingsProvider.notifier).setEnabled(value),
-        ),
-        onTap: () => ref
-            .read(appSoundSettingsProvider.notifier)
-            .setEnabled(!settings.enabled),
-      ),
-      _SettingsRow(
-        title: '复习反馈音',
-        subtitle: settings.enabled ? '答题后播放轻柔提示音' : '开启界面音效后可用',
-        enabled: settings.enabled,
-        trailing: Switch(
-          value: settings.reviewFeedbackEnabled,
-          activeThumbColor: _ProfileColors.green,
-          onChanged: settings.enabled
-              ? (value) => ref
-                    .read(appSoundSettingsProvider.notifier)
-                    .setReviewFeedbackEnabled(value)
-              : null,
-        ),
-        onTap: settings.enabled
-            ? () => ref
-                  .read(appSoundSettingsProvider.notifier)
-                  .setReviewFeedbackEnabled(!settings.reviewFeedbackEnabled)
-            : null,
-      ),
-    ],
-  );
 }
 
 class _TextChevron extends StatelessWidget {

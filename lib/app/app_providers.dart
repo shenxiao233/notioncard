@@ -83,7 +83,10 @@ final authRepositoryProvider = Provider<AuthRepository>((ref) {
 });
 
 final contentRepositoryProvider = Provider<ContentRepository>((ref) {
-  return ContentRepository(ref.watch(appDatabaseProvider));
+  return ContentRepository(
+    ref.watch(appDatabaseProvider),
+    preferences: ref.watch(sharedPreferencesProvider),
+  );
 });
 
 final reviewEngineProvider = Provider<ReviewEngine>((ref) => ReviewEngine());

@@ -261,7 +261,11 @@ class _ReviewHomePageState extends ConsumerState<ReviewHomePage> {
         _selectedFolderAccountId,
         normalized,
         database: ref.read(appDatabaseProvider),
-      ),
+      ).then((_) {
+        ref
+            .read(syncControllerProvider.notifier)
+            .scheduleSync(reason: 'review-folder-change');
+      }),
     );
   }
 
