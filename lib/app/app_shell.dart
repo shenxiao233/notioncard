@@ -18,7 +18,8 @@ class AppShell extends ConsumerWidget {
 
   int? _indexFor(String location) {
     if (location.startsWith('/edit')) return null;
-    if (location.startsWith('/library')) return 1;
+    if (location.startsWith('/statistics')) return 1;
+    if (location.startsWith('/library')) return 2;
     if (location.startsWith('/knowledge-base') ||
         location.startsWith('/cards-market') ||
         location.startsWith('/cards') ||
@@ -89,7 +90,7 @@ class _BottomNavigationBar extends StatelessWidget {
 
   static const _items = <(IconData, IconData, String, String)>[
     (Icons.home_outlined, Icons.home_rounded, '首页', '/review'),
-    (Icons.menu_book_outlined, Icons.menu_book_rounded, '学习', '/library'),
+    (Icons.bar_chart_outlined, Icons.bar_chart_rounded, '统计', '/statistics'),
     (Icons.archive_outlined, Icons.archive_rounded, '资源', '/knowledge-base'),
     (Icons.person_outline_rounded, Icons.person_rounded, '我的', '/settings'),
   ];

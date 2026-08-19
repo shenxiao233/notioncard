@@ -6,10 +6,11 @@ import 'package:package_info_plus/package_info_plus.dart';
 import '../../app/app_providers.dart';
 import '../../core/models/account_model.dart';
 import '../../core/update/app_update_controller.dart';
+import '../../core/widgets/app_visuals.dart';
 import 'account_avatar.dart';
 
 abstract final class _PreferencesColors {
-  static const background = Color(0xfff5f6f2);
+  static const background = AppVisualColors.background;
   static const surface = Color(0xffffffff);
   static const ink = Color(0xff1c211e);
   static const muted = Color(0xff7a837d);

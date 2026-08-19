@@ -23,6 +23,7 @@ import '../features/review/study_page.dart';
 import '../features/settings/account_page.dart';
 import '../features/settings/settings_page.dart';
 import '../features/settings/settings_preferences_page.dart';
+import '../features/statistics/statistics_page.dart';
 import 'app_providers.dart';
 import 'app_shell.dart';
 
@@ -96,6 +97,10 @@ final routerProvider = Provider<GoRouter>((ref) {
                 builder: (context, state) => const ReviewHistoryPage(),
               ),
             ],
+          ),
+          GoRoute(
+            path: '/statistics',
+            builder: (context, state) => const StatisticsPage(),
           ),
           GoRoute(
             path: '/library',

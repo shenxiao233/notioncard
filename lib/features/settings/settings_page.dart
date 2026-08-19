@@ -7,12 +7,13 @@ import 'package:intl/intl.dart';
 import '../../app/app_providers.dart';
 import '../../core/models/account_model.dart';
 import '../../core/widgets/app_layout.dart';
+import '../../core/widgets/app_visuals.dart';
 import '../../core/sync/sync_controller.dart';
 import '../review/review_settings.dart';
 import 'account_avatar.dart';
 
 abstract final class _ProfileColors {
-  static const background = Color(0xfff5f8f5);
+  static const background = AppVisualColors.background;
   static const ink = Color(0xff111412);
   static const muted = Color(0xff6f7975);
   static const green = Color(0xff26983b);

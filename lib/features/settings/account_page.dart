@@ -7,10 +7,11 @@ import 'package:image_picker/image_picker.dart';
 import '../../app/app_providers.dart';
 import '../../core/models/account_model.dart';
 import '../../core/repositories/auth_repository.dart';
+import '../../core/widgets/app_visuals.dart';
 import 'account_avatar.dart';
 
 abstract final class _AccountColors {
-  static const background = Color(0xfff5f6f2);
+  static const background = AppVisualColors.background;
   static const surface = Color(0xffffffff);
   static const ink = Color(0xff1c211e);
   static const muted = Color(0xff7a837d);
