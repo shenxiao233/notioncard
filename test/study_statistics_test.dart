@@ -129,6 +129,38 @@ void main() {
     expect(statistics.decks.single.due, 1);
   });
 
+  test('counts manually mastered new cards as learned, not as new cards', () {
+    final statistics = buildStudyStatistics(
+      cards: [
+        _card(
+          id: 'manually-mastered',
+          folder: 'deck-a',
+          mastery: masteredCardMastery,
+          state: FsrsState.newCard,
+          dueAt: DateTime(9999, 12, 31, 23, 59, 59),
+        ),
+        _card(
+          id: 'new',
+          folder: 'deck-a',
+          state: FsrsState.newCard,
+          dueAt: now,
+        ),
+      ],
+      events: const [],
+      range: StudyStatsRange.all,
+      folder: 'deck-a',
+      now: now,
+    );
+
+    expect(statistics.learnedCards, 1);
+    expect(statistics.masteredCards, 1);
+    expect(statistics.masteryRate, 1);
+    expect(statistics.newCards, 1);
+    expect(statistics.decks.single.learned, 1);
+    expect(statistics.decks.single.mastered, 1);
+    expect(statistics.decks.single.newCards, 1);
+  });
+
   testWidgets('renders the statistics page at phone width', (tester) async {
     await tester.binding.setSurfaceSize(const Size(430, 932));
     addTearDown(() => tester.binding.setSurfaceSize(null));

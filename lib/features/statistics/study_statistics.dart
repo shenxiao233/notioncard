@@ -140,7 +140,7 @@ StudyStatistics buildStudyStatistics({
       .where((card) => !card.suspended && !card.dueAt.isAfter(current))
       .length;
   final newCards = scopedCards
-      .where((card) => card.fsrs.state == FsrsState.newCard)
+      .where((card) => card.fsrs.state == FsrsState.newCard && !card.isMastered)
       .length;
   final reviewedCardIds = rangedEvents.map((event) => event.cardId).toSet();
 
@@ -166,7 +166,8 @@ String? _normalizedFolder(String? value) {
   return normalized.isEmpty ? null : normalized;
 }
 
-bool _isLearned(CardModel card) => card.reviews > 0 || card.fsrs.reps > 0;
+bool _isLearned(CardModel card) =>
+    card.isMastered || card.reviews > 0 || card.fsrs.reps > 0;
 
 DateTime _rangeStart(
   StudyStatsRange range,
@@ -246,7 +247,9 @@ List<StudyDeckStatistics> _buildDecks(List<CardModel> cards, DateTime current) {
           .where((card) => !card.suspended && !card.dueAt.isAfter(current))
           .length,
       newCards: values
-          .where((card) => card.fsrs.state == FsrsState.newCard)
+          .where(
+            (card) => card.fsrs.state == FsrsState.newCard && !card.isMastered,
+          )
           .length,
     );
   }).toList();
