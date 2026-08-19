@@ -378,10 +378,19 @@ class MarketRepository {
           json['correctAnswer'],
       field: '卡片答案',
     );
-    final noteContent =
+    final content =
         _readText(
-          json['noteContent'] ?? json['content'] ?? json['body'],
+          json['content'] ?? json['body'],
           field: '卡片内容',
+          required: false,
+        ) ??
+        '';
+    final noteContent =
+        _readText(json['noteContent'], field: '个人笔记', required: false) ?? '';
+    final source =
+        _readText(
+          json['source'] ?? json['origin'] ?? json['sourceName'],
+          field: 'card source',
           required: false,
         ) ??
         '';
@@ -403,9 +412,11 @@ class MarketRepository {
       accountId: accountId,
       type: type,
       folder: folder,
+      source: source,
       question: question,
       options: _readOptions(json['options']),
       answer: answer,
+      content: type == CardType.note ? content : '',
       noteContent: noteContent,
       explanation: explanation,
       tags: tags,

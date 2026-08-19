@@ -51,6 +51,7 @@ class SyncController extends StateNotifier<SyncUiState> {
     this._connectivity,
     this._account, {
     this.onDataChanged,
+    this.onPendingChanged,
   }) : super(const SyncUiState()) {
     _connectivitySubscription = _connectivity.onConnectivityChanged.listen(
       _onConnectivityChanged,
@@ -63,6 +64,11 @@ class SyncController extends StateNotifier<SyncUiState> {
   final Connectivity _connectivity;
   final AccountModel? Function() _account;
   final FutureOr<void> Function()? onDataChanged;
+
+  /// Invalidates account-scoped pending-count providers after the durable
+  /// queue has been refreshed, so a completed upload cannot leave a stale
+  /// count visible in the settings page.
+  final void Function()? onPendingChanged;
   late final StreamSubscription<List<ConnectivityResult>>
   _connectivitySubscription;
   DateTime? _lastAutomaticSyncAt;
@@ -159,6 +165,7 @@ class SyncController extends StateNotifier<SyncUiState> {
       _scheduledSync = null;
       unawaited(pushPending(reason: reason));
     });
+    unawaited(refreshPending());
   }
 
   Future<void> _startSync(String reason, {required bool pullRemote}) {
@@ -285,6 +292,7 @@ class SyncController extends StateNotifier<SyncUiState> {
         lastSyncedAt: DateTime.now(),
         message: complete ? '同步完成' : '同步部分完成，仍有 $pending 项等待处理',
       );
+      onPendingChanged?.call();
     } on DioException catch (error) {
       if (CancelToken.isCancel(error) || cancelToken.isCancelled) return;
       _lastAutomaticSyncAt = null;
@@ -341,6 +349,7 @@ class SyncController extends StateNotifier<SyncUiState> {
       pending: pending,
       message: message,
     );
+    onPendingChanged?.call();
   }
 
   String _syncErrorMessage(DioException error) {
@@ -372,6 +381,7 @@ class SyncController extends StateNotifier<SyncUiState> {
     _scheduledSync = null;
     _cancelToken?.cancel('account changed');
     if (mounted) state = const SyncUiState();
+    onPendingChanged?.call();
   }
 
   Future<void> refreshPending() async {
@@ -380,6 +390,7 @@ class SyncController extends StateNotifier<SyncUiState> {
     if (account == null) {
       if (mounted && generation == _sessionGeneration) {
         state = state.copyWith(pending: 0);
+        onPendingChanged?.call();
       }
       return;
     }
@@ -388,6 +399,7 @@ class SyncController extends StateNotifier<SyncUiState> {
         generation == _sessionGeneration &&
         _account()?.id == account.id) {
       state = state.copyWith(pending: pending);
+      onPendingChanged?.call();
     }
   }
 

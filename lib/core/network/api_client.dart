@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:dio/dio.dart';
 
 import 'api_config.dart';
@@ -12,6 +14,8 @@ typedef UnauthorizedHandler = Future<void> Function();
 enum RefreshOutcome { refreshed, invalid, unavailable }
 
 class ApiClient {
+  static const warmupTtl = Duration(seconds: 60);
+
   ApiClient({
     required ApiConfig config,
     required this.tokenReader,
@@ -82,6 +86,8 @@ class ApiClient {
   final TokenPairWriter? onTokensRefreshed;
   final UnauthorizedHandler? onUnauthorized;
   Future<RefreshOutcome>? _refreshInFlight;
+  Future<void>? _warmupInFlight;
+  DateTime? _warmupCompletedAt;
 
   Future<RefreshOutcome> _refreshSingleFlight() async {
     final active = _refreshInFlight;
@@ -147,6 +153,48 @@ class ApiClient {
       cancelToken: cancelToken,
     ),
   );
+
+  /// Opens the API connection so the next user action can reuse the TCP/TLS
+  /// session. Warmup is best-effort and single-flight: concurrent callers
+  /// share one request, while a successful request is reused briefly instead
+  /// of creating another cold connection.
+  Future<void> warmup({bool force = false}) {
+    final active = _warmupInFlight;
+    if (active != null) return active;
+
+    final completedAt = _warmupCompletedAt;
+    if (!force &&
+        completedAt != null &&
+        DateTime.now().isBefore(completedAt.add(warmupTtl))) {
+      return Future<void>.value();
+    }
+
+    final task = _runWarmup();
+    _warmupInFlight = task;
+    unawaited(
+      task.whenComplete(() {
+        if (identical(_warmupInFlight, task)) _warmupInFlight = null;
+      }),
+    );
+    return task;
+  }
+
+  Future<void> _runWarmup() async {
+    try {
+      await get(
+        '/health',
+        options: Options(
+          connectTimeout: const Duration(seconds: 5),
+          receiveTimeout: const Duration(seconds: 5),
+          sendTimeout: const Duration(seconds: 5),
+          extra: const {'skipAuth': true, 'apiWarmup': true},
+        ),
+      );
+      _warmupCompletedAt = DateTime.now();
+    } catch (_) {
+      // The real request will report the actual connectivity error.
+    }
+  }
 
   Future<Response<dynamic>> post(
     String path, {

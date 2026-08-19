@@ -527,13 +527,14 @@ void main() {
         'syncTime': '2026-08-03T00:00:00.000Z',
         'objects': [],
       }),
+      _FakeResponse.json({'changes': []}),
     ]);
     final coordinator = _buildCoordinator(database, preferences, adapter);
 
     expect(coordinator.needsInitialFullSync('account-1'), isTrue);
     await coordinator.fullSync('account-1');
     expect(coordinator.needsInitialFullSync('account-1'), isFalse);
-    expect(adapter.requests.single.queryParameters['limit'], 1000);
+    expect(adapter.requests.single.queryParameters['limit'], 1500);
 
     await coordinator.fullSync('account-1');
     expect(
@@ -542,6 +543,58 @@ void main() {
     );
     expect(adapter.requests[1].queryParameters['progressOnly'], 'true');
   });
+
+  test(
+    'uses one versioned snapshot request when the server supports it',
+    () async {
+      final adapter = _QueueAdapter([
+        _FakeResponse.json({
+          'snapshot': true,
+          'snapshotRevision': '9',
+          'snapshotId': 'snapshot-9',
+          'syncRevision': '9',
+          'objects': [],
+          'hasMore': false,
+        }),
+      ]);
+      final coordinator = _buildCoordinator(database, preferences, adapter);
+
+      await coordinator.fullSync('account-1');
+
+      expect(adapter.requests, hasLength(1));
+      expect(adapter.requests.single.queryParameters['limit'], 1500);
+      expect(adapter.requests.single.queryParameters['snapshot'], 'true');
+      expect(preferences.getString('sync.revision.account-1'), '9');
+    },
+  );
+
+  test(
+    'falls back to cursor pagination when a snapshot is too large',
+    () async {
+      final adapter = _QueueAdapter([
+        _FakeResponse.json({
+          'snapshotTooLarge': true,
+          'objects': [],
+          'hasMore': true,
+          'nextCursor': '',
+        }),
+        _FakeResponse.json({
+          'snapshot': false,
+          'objects': [],
+          'hasMore': false,
+          'syncRevision': '10',
+        }),
+      ]);
+      final coordinator = _buildCoordinator(database, preferences, adapter);
+
+      await coordinator.fullSync('account-1');
+
+      expect(adapter.requests, hasLength(2));
+      expect(adapter.requests.first.queryParameters['snapshot'], 'true');
+      expect(adapter.requests[1].queryParameters['snapshot'], isNull);
+      expect(adapter.requests[1].queryParameters['limit'], 1500);
+    },
+  );
 
   test(
     'merges a progress-only pull without replacing local card content',
@@ -583,6 +636,7 @@ void main() {
             },
           ],
         }),
+        _FakeResponse.json({'changes': []}),
       ]);
       final coordinator = _buildCoordinator(database, preferences, adapter);
 
@@ -595,7 +649,7 @@ void main() {
       expect(saved.reviews, 3);
       expect(saved.mastery, 'familiar');
       expect(saved.fsrs.state, FsrsState.review);
-      expect(adapter.requests.single.queryParameters['progressOnly'], 'true');
+      expect(adapter.requests.first.queryParameters['progressOnly'], 'true');
     },
   );
 
@@ -628,6 +682,7 @@ void main() {
             },
           ],
         }),
+        _FakeResponse.json({'changes': []}),
         _FakeResponse.json({
           'objects': [
             {
@@ -671,11 +726,11 @@ void main() {
       expect(report.cards, 1);
       expect(saved.question, 'updated question');
       expect(saved.explanation, 'updated explanation');
-      expect(adapter.requests, hasLength(2));
+      expect(adapter.requests, hasLength(3));
       expect(adapter.requests.first.path, '/api/v2/sync/full');
       expect(adapter.requests.first.queryParameters['contentMode'], 'manifest');
-      expect(adapter.requests[1].path, '/api/v2/sync/content');
-      expect(adapter.requests[1].queryParameters['ids'], 'card-1');
+      expect(adapter.requests[2].path, '/api/v2/sync/content');
+      expect(adapter.requests[2].queryParameters['ids'], 'card-1');
       expect(
         preferences.getString('sync.card_content_hashes.account-1'),
         jsonEncode({'card-1': 'new-hash'}),
@@ -770,13 +825,14 @@ void main() {
           'nextCursor': 'opaque-page-1',
           'objects': [],
         }),
-        _FakeResponse.json({}), // high-water checkpoint
+        _FakeResponse.json({}), // best-effort device checkpoint
         _FakeResponse.json({
           'highWaterAt': '2026-08-03T00:00:00.000Z',
           'nextCursor': 'opaque-page-2',
           'objects': [],
         }),
-        _FakeResponse.json({}), // high-water checkpoint
+        _FakeResponse.json({'changes': []}),
+        _FakeResponse.json({}), // best-effort device checkpoint
       ]);
       final coordinator = _buildCoordinator(database, preferences, adapter);
 
@@ -785,7 +841,7 @@ void main() {
         preferences.getString('sync.last_sync.account-1'),
         '2026-08-02T00:00:00.000Z',
       );
-      expect(preferences.getString('sync.full_sync_version.account-1'), '3');
+      expect(preferences.getString('sync.full_sync_version.account-1'), '4');
 
       await coordinator.fullSync('account-1');
       final fullPulls = adapter.requests
@@ -1023,6 +1079,7 @@ CardModel _buildCard(String id, {required String folder}) {
     question: 'question',
     options: const {'A': 'answer'},
     answer: const ['A'],
+    content: '',
     noteContent: '',
     explanation: '',
     tags: const [],

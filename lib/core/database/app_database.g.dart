@@ -46,6 +46,16 @@ class $CardsTable extends Cards with TableInfo<$CardsTable, Card> {
     type: DriftSqlType.string,
     requiredDuringInsert: true,
   );
+  static const VerificationMeta _sourceMeta = const VerificationMeta('source');
+  @override
+  late final GeneratedColumn<String> source = GeneratedColumn<String>(
+    'source',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+    defaultValue: const Constant(''),
+  );
   static const VerificationMeta _questionMeta = const VerificationMeta(
     'question',
   );
@@ -78,6 +88,18 @@ class $CardsTable extends Cards with TableInfo<$CardsTable, Card> {
     false,
     type: DriftSqlType.string,
     requiredDuringInsert: true,
+  );
+  static const VerificationMeta _contentMeta = const VerificationMeta(
+    'content',
+  );
+  @override
+  late final GeneratedColumn<String> content = GeneratedColumn<String>(
+    'content',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+    defaultValue: const Constant(''),
   );
   static const VerificationMeta _noteContentMeta = const VerificationMeta(
     'noteContent',
@@ -212,9 +234,11 @@ class $CardsTable extends Cards with TableInfo<$CardsTable, Card> {
     accountId,
     type,
     folder,
+    source,
     question,
     optionsJson,
     answerJson,
+    content,
     noteContent,
     explanation,
     tagsJson,
@@ -268,6 +292,12 @@ class $CardsTable extends Cards with TableInfo<$CardsTable, Card> {
     } else if (isInserting) {
       context.missing(_folderMeta);
     }
+    if (data.containsKey('source')) {
+      context.handle(
+        _sourceMeta,
+        source.isAcceptableOrUnknown(data['source']!, _sourceMeta),
+      );
+    }
     if (data.containsKey('question')) {
       context.handle(
         _questionMeta,
@@ -294,6 +324,12 @@ class $CardsTable extends Cards with TableInfo<$CardsTable, Card> {
       );
     } else if (isInserting) {
       context.missing(_answerJsonMeta);
+    }
+    if (data.containsKey('content')) {
+      context.handle(
+        _contentMeta,
+        content.isAcceptableOrUnknown(data['content']!, _contentMeta),
+      );
     }
     if (data.containsKey('note_content')) {
       context.handle(
@@ -402,6 +438,10 @@ class $CardsTable extends Cards with TableInfo<$CardsTable, Card> {
         DriftSqlType.string,
         data['${effectivePrefix}folder'],
       )!,
+      source: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}source'],
+      )!,
       question: attachedDatabase.typeMapping.read(
         DriftSqlType.string,
         data['${effectivePrefix}question'],
@@ -413,6 +453,10 @@ class $CardsTable extends Cards with TableInfo<$CardsTable, Card> {
       answerJson: attachedDatabase.typeMapping.read(
         DriftSqlType.string,
         data['${effectivePrefix}answer_json'],
+      )!,
+      content: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}content'],
       )!,
       noteContent: attachedDatabase.typeMapping.read(
         DriftSqlType.string,
@@ -472,9 +516,11 @@ class Card extends DataClass implements Insertable<Card> {
   final String accountId;
   final String type;
   final String folder;
+  final String source;
   final String question;
   final String optionsJson;
   final String answerJson;
+  final String content;
   final String noteContent;
   final String explanation;
   final String tagsJson;
@@ -491,9 +537,11 @@ class Card extends DataClass implements Insertable<Card> {
     required this.accountId,
     required this.type,
     required this.folder,
+    required this.source,
     required this.question,
     required this.optionsJson,
     required this.answerJson,
+    required this.content,
     required this.noteContent,
     required this.explanation,
     required this.tagsJson,
@@ -513,9 +561,11 @@ class Card extends DataClass implements Insertable<Card> {
     map['account_id'] = Variable<String>(accountId);
     map['type'] = Variable<String>(type);
     map['folder'] = Variable<String>(folder);
+    map['source'] = Variable<String>(source);
     map['question'] = Variable<String>(question);
     map['options_json'] = Variable<String>(optionsJson);
     map['answer_json'] = Variable<String>(answerJson);
+    map['content'] = Variable<String>(content);
     map['note_content'] = Variable<String>(noteContent);
     map['explanation'] = Variable<String>(explanation);
     map['tags_json'] = Variable<String>(tagsJson);
@@ -538,9 +588,11 @@ class Card extends DataClass implements Insertable<Card> {
       accountId: Value(accountId),
       type: Value(type),
       folder: Value(folder),
+      source: Value(source),
       question: Value(question),
       optionsJson: Value(optionsJson),
       answerJson: Value(answerJson),
+      content: Value(content),
       noteContent: Value(noteContent),
       explanation: Value(explanation),
       tagsJson: Value(tagsJson),
@@ -567,9 +619,11 @@ class Card extends DataClass implements Insertable<Card> {
       accountId: serializer.fromJson<String>(json['accountId']),
       type: serializer.fromJson<String>(json['type']),
       folder: serializer.fromJson<String>(json['folder']),
+      source: serializer.fromJson<String>(json['source']),
       question: serializer.fromJson<String>(json['question']),
       optionsJson: serializer.fromJson<String>(json['optionsJson']),
       answerJson: serializer.fromJson<String>(json['answerJson']),
+      content: serializer.fromJson<String>(json['content']),
       noteContent: serializer.fromJson<String>(json['noteContent']),
       explanation: serializer.fromJson<String>(json['explanation']),
       tagsJson: serializer.fromJson<String>(json['tagsJson']),
@@ -591,9 +645,11 @@ class Card extends DataClass implements Insertable<Card> {
       'accountId': serializer.toJson<String>(accountId),
       'type': serializer.toJson<String>(type),
       'folder': serializer.toJson<String>(folder),
+      'source': serializer.toJson<String>(source),
       'question': serializer.toJson<String>(question),
       'optionsJson': serializer.toJson<String>(optionsJson),
       'answerJson': serializer.toJson<String>(answerJson),
+      'content': serializer.toJson<String>(content),
       'noteContent': serializer.toJson<String>(noteContent),
       'explanation': serializer.toJson<String>(explanation),
       'tagsJson': serializer.toJson<String>(tagsJson),
@@ -613,9 +669,11 @@ class Card extends DataClass implements Insertable<Card> {
     String? accountId,
     String? type,
     String? folder,
+    String? source,
     String? question,
     String? optionsJson,
     String? answerJson,
+    String? content,
     String? noteContent,
     String? explanation,
     String? tagsJson,
@@ -632,9 +690,11 @@ class Card extends DataClass implements Insertable<Card> {
     accountId: accountId ?? this.accountId,
     type: type ?? this.type,
     folder: folder ?? this.folder,
+    source: source ?? this.source,
     question: question ?? this.question,
     optionsJson: optionsJson ?? this.optionsJson,
     answerJson: answerJson ?? this.answerJson,
+    content: content ?? this.content,
     noteContent: noteContent ?? this.noteContent,
     explanation: explanation ?? this.explanation,
     tagsJson: tagsJson ?? this.tagsJson,
@@ -653,6 +713,7 @@ class Card extends DataClass implements Insertable<Card> {
       accountId: data.accountId.present ? data.accountId.value : this.accountId,
       type: data.type.present ? data.type.value : this.type,
       folder: data.folder.present ? data.folder.value : this.folder,
+      source: data.source.present ? data.source.value : this.source,
       question: data.question.present ? data.question.value : this.question,
       optionsJson: data.optionsJson.present
           ? data.optionsJson.value
@@ -660,6 +721,7 @@ class Card extends DataClass implements Insertable<Card> {
       answerJson: data.answerJson.present
           ? data.answerJson.value
           : this.answerJson,
+      content: data.content.present ? data.content.value : this.content,
       noteContent: data.noteContent.present
           ? data.noteContent.value
           : this.noteContent,
@@ -685,9 +747,11 @@ class Card extends DataClass implements Insertable<Card> {
           ..write('accountId: $accountId, ')
           ..write('type: $type, ')
           ..write('folder: $folder, ')
+          ..write('source: $source, ')
           ..write('question: $question, ')
           ..write('optionsJson: $optionsJson, ')
           ..write('answerJson: $answerJson, ')
+          ..write('content: $content, ')
           ..write('noteContent: $noteContent, ')
           ..write('explanation: $explanation, ')
           ..write('tagsJson: $tagsJson, ')
@@ -709,9 +773,11 @@ class Card extends DataClass implements Insertable<Card> {
     accountId,
     type,
     folder,
+    source,
     question,
     optionsJson,
     answerJson,
+    content,
     noteContent,
     explanation,
     tagsJson,
@@ -732,9 +798,11 @@ class Card extends DataClass implements Insertable<Card> {
           other.accountId == this.accountId &&
           other.type == this.type &&
           other.folder == this.folder &&
+          other.source == this.source &&
           other.question == this.question &&
           other.optionsJson == this.optionsJson &&
           other.answerJson == this.answerJson &&
+          other.content == this.content &&
           other.noteContent == this.noteContent &&
           other.explanation == this.explanation &&
           other.tagsJson == this.tagsJson &&
@@ -753,9 +821,11 @@ class CardsCompanion extends UpdateCompanion<Card> {
   final Value<String> accountId;
   final Value<String> type;
   final Value<String> folder;
+  final Value<String> source;
   final Value<String> question;
   final Value<String> optionsJson;
   final Value<String> answerJson;
+  final Value<String> content;
   final Value<String> noteContent;
   final Value<String> explanation;
   final Value<String> tagsJson;
@@ -773,9 +843,11 @@ class CardsCompanion extends UpdateCompanion<Card> {
     this.accountId = const Value.absent(),
     this.type = const Value.absent(),
     this.folder = const Value.absent(),
+    this.source = const Value.absent(),
     this.question = const Value.absent(),
     this.optionsJson = const Value.absent(),
     this.answerJson = const Value.absent(),
+    this.content = const Value.absent(),
     this.noteContent = const Value.absent(),
     this.explanation = const Value.absent(),
     this.tagsJson = const Value.absent(),
@@ -794,9 +866,11 @@ class CardsCompanion extends UpdateCompanion<Card> {
     required String accountId,
     required String type,
     required String folder,
+    this.source = const Value.absent(),
     required String question,
     required String optionsJson,
     required String answerJson,
+    this.content = const Value.absent(),
     this.noteContent = const Value.absent(),
     this.explanation = const Value.absent(),
     required String tagsJson,
@@ -826,9 +900,11 @@ class CardsCompanion extends UpdateCompanion<Card> {
     Expression<String>? accountId,
     Expression<String>? type,
     Expression<String>? folder,
+    Expression<String>? source,
     Expression<String>? question,
     Expression<String>? optionsJson,
     Expression<String>? answerJson,
+    Expression<String>? content,
     Expression<String>? noteContent,
     Expression<String>? explanation,
     Expression<String>? tagsJson,
@@ -847,9 +923,11 @@ class CardsCompanion extends UpdateCompanion<Card> {
       if (accountId != null) 'account_id': accountId,
       if (type != null) 'type': type,
       if (folder != null) 'folder': folder,
+      if (source != null) 'source': source,
       if (question != null) 'question': question,
       if (optionsJson != null) 'options_json': optionsJson,
       if (answerJson != null) 'answer_json': answerJson,
+      if (content != null) 'content': content,
       if (noteContent != null) 'note_content': noteContent,
       if (explanation != null) 'explanation': explanation,
       if (tagsJson != null) 'tags_json': tagsJson,
@@ -870,9 +948,11 @@ class CardsCompanion extends UpdateCompanion<Card> {
     Value<String>? accountId,
     Value<String>? type,
     Value<String>? folder,
+    Value<String>? source,
     Value<String>? question,
     Value<String>? optionsJson,
     Value<String>? answerJson,
+    Value<String>? content,
     Value<String>? noteContent,
     Value<String>? explanation,
     Value<String>? tagsJson,
@@ -891,9 +971,11 @@ class CardsCompanion extends UpdateCompanion<Card> {
       accountId: accountId ?? this.accountId,
       type: type ?? this.type,
       folder: folder ?? this.folder,
+      source: source ?? this.source,
       question: question ?? this.question,
       optionsJson: optionsJson ?? this.optionsJson,
       answerJson: answerJson ?? this.answerJson,
+      content: content ?? this.content,
       noteContent: noteContent ?? this.noteContent,
       explanation: explanation ?? this.explanation,
       tagsJson: tagsJson ?? this.tagsJson,
@@ -924,6 +1006,9 @@ class CardsCompanion extends UpdateCompanion<Card> {
     if (folder.present) {
       map['folder'] = Variable<String>(folder.value);
     }
+    if (source.present) {
+      map['source'] = Variable<String>(source.value);
+    }
     if (question.present) {
       map['question'] = Variable<String>(question.value);
     }
@@ -932,6 +1017,9 @@ class CardsCompanion extends UpdateCompanion<Card> {
     }
     if (answerJson.present) {
       map['answer_json'] = Variable<String>(answerJson.value);
+    }
+    if (content.present) {
+      map['content'] = Variable<String>(content.value);
     }
     if (noteContent.present) {
       map['note_content'] = Variable<String>(noteContent.value);
@@ -979,9 +1067,11 @@ class CardsCompanion extends UpdateCompanion<Card> {
           ..write('accountId: $accountId, ')
           ..write('type: $type, ')
           ..write('folder: $folder, ')
+          ..write('source: $source, ')
           ..write('question: $question, ')
           ..write('optionsJson: $optionsJson, ')
           ..write('answerJson: $answerJson, ')
+          ..write('content: $content, ')
           ..write('noteContent: $noteContent, ')
           ..write('explanation: $explanation, ')
           ..write('tagsJson: $tagsJson, ')
@@ -993,6 +1083,471 @@ class CardsCompanion extends UpdateCompanion<Card> {
           ..write('mastery: $mastery, ')
           ..write('suspended: $suspended, ')
           ..write('fsrsJson: $fsrsJson, ')
+          ..write('rowid: $rowid')
+          ..write(')'))
+        .toString();
+  }
+}
+
+class $CardHighlightsTable extends CardHighlights
+    with TableInfo<$CardHighlightsTable, CardHighlight> {
+  @override
+  final GeneratedDatabase attachedDatabase;
+  final String? _alias;
+  $CardHighlightsTable(this.attachedDatabase, [this._alias]);
+  static const VerificationMeta _idMeta = const VerificationMeta('id');
+  @override
+  late final GeneratedColumn<String> id = GeneratedColumn<String>(
+    'id',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _accountIdMeta = const VerificationMeta(
+    'accountId',
+  );
+  @override
+  late final GeneratedColumn<String> accountId = GeneratedColumn<String>(
+    'account_id',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _cardIdMeta = const VerificationMeta('cardId');
+  @override
+  late final GeneratedColumn<String> cardId = GeneratedColumn<String>(
+    'card_id',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _sectionMeta = const VerificationMeta(
+    'section',
+  );
+  @override
+  late final GeneratedColumn<String> section = GeneratedColumn<String>(
+    'section',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _selectedTextMeta = const VerificationMeta(
+    'selectedText',
+  );
+  @override
+  late final GeneratedColumn<String> selectedText = GeneratedColumn<String>(
+    'selected_text',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _colorMeta = const VerificationMeta('color');
+  @override
+  late final GeneratedColumn<String> color = GeneratedColumn<String>(
+    'color',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _createdAtMeta = const VerificationMeta(
+    'createdAt',
+  );
+  @override
+  late final GeneratedColumn<DateTime> createdAt = GeneratedColumn<DateTime>(
+    'created_at',
+    aliasedName,
+    false,
+    type: DriftSqlType.dateTime,
+    requiredDuringInsert: true,
+  );
+  @override
+  List<GeneratedColumn> get $columns => [
+    id,
+    accountId,
+    cardId,
+    section,
+    selectedText,
+    color,
+    createdAt,
+  ];
+  @override
+  String get aliasedName => _alias ?? actualTableName;
+  @override
+  String get actualTableName => $name;
+  static const String $name = 'card_highlights';
+  @override
+  VerificationContext validateIntegrity(
+    Insertable<CardHighlight> instance, {
+    bool isInserting = false,
+  }) {
+    final context = VerificationContext();
+    final data = instance.toColumns(true);
+    if (data.containsKey('id')) {
+      context.handle(_idMeta, id.isAcceptableOrUnknown(data['id']!, _idMeta));
+    } else if (isInserting) {
+      context.missing(_idMeta);
+    }
+    if (data.containsKey('account_id')) {
+      context.handle(
+        _accountIdMeta,
+        accountId.isAcceptableOrUnknown(data['account_id']!, _accountIdMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_accountIdMeta);
+    }
+    if (data.containsKey('card_id')) {
+      context.handle(
+        _cardIdMeta,
+        cardId.isAcceptableOrUnknown(data['card_id']!, _cardIdMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_cardIdMeta);
+    }
+    if (data.containsKey('section')) {
+      context.handle(
+        _sectionMeta,
+        section.isAcceptableOrUnknown(data['section']!, _sectionMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_sectionMeta);
+    }
+    if (data.containsKey('selected_text')) {
+      context.handle(
+        _selectedTextMeta,
+        selectedText.isAcceptableOrUnknown(
+          data['selected_text']!,
+          _selectedTextMeta,
+        ),
+      );
+    } else if (isInserting) {
+      context.missing(_selectedTextMeta);
+    }
+    if (data.containsKey('color')) {
+      context.handle(
+        _colorMeta,
+        color.isAcceptableOrUnknown(data['color']!, _colorMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_colorMeta);
+    }
+    if (data.containsKey('created_at')) {
+      context.handle(
+        _createdAtMeta,
+        createdAt.isAcceptableOrUnknown(data['created_at']!, _createdAtMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_createdAtMeta);
+    }
+    return context;
+  }
+
+  @override
+  Set<GeneratedColumn> get $primaryKey => {id, accountId};
+  @override
+  CardHighlight map(Map<String, dynamic> data, {String? tablePrefix}) {
+    final effectivePrefix = tablePrefix != null ? '$tablePrefix.' : '';
+    return CardHighlight(
+      id: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}id'],
+      )!,
+      accountId: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}account_id'],
+      )!,
+      cardId: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}card_id'],
+      )!,
+      section: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}section'],
+      )!,
+      selectedText: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}selected_text'],
+      )!,
+      color: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}color'],
+      )!,
+      createdAt: attachedDatabase.typeMapping.read(
+        DriftSqlType.dateTime,
+        data['${effectivePrefix}created_at'],
+      )!,
+    );
+  }
+
+  @override
+  $CardHighlightsTable createAlias(String alias) {
+    return $CardHighlightsTable(attachedDatabase, alias);
+  }
+}
+
+class CardHighlight extends DataClass implements Insertable<CardHighlight> {
+  final String id;
+  final String accountId;
+  final String cardId;
+  final String section;
+  final String selectedText;
+  final String color;
+  final DateTime createdAt;
+  const CardHighlight({
+    required this.id,
+    required this.accountId,
+    required this.cardId,
+    required this.section,
+    required this.selectedText,
+    required this.color,
+    required this.createdAt,
+  });
+  @override
+  Map<String, Expression> toColumns(bool nullToAbsent) {
+    final map = <String, Expression>{};
+    map['id'] = Variable<String>(id);
+    map['account_id'] = Variable<String>(accountId);
+    map['card_id'] = Variable<String>(cardId);
+    map['section'] = Variable<String>(section);
+    map['selected_text'] = Variable<String>(selectedText);
+    map['color'] = Variable<String>(color);
+    map['created_at'] = Variable<DateTime>(createdAt);
+    return map;
+  }
+
+  CardHighlightsCompanion toCompanion(bool nullToAbsent) {
+    return CardHighlightsCompanion(
+      id: Value(id),
+      accountId: Value(accountId),
+      cardId: Value(cardId),
+      section: Value(section),
+      selectedText: Value(selectedText),
+      color: Value(color),
+      createdAt: Value(createdAt),
+    );
+  }
+
+  factory CardHighlight.fromJson(
+    Map<String, dynamic> json, {
+    ValueSerializer? serializer,
+  }) {
+    serializer ??= driftRuntimeOptions.defaultSerializer;
+    return CardHighlight(
+      id: serializer.fromJson<String>(json['id']),
+      accountId: serializer.fromJson<String>(json['accountId']),
+      cardId: serializer.fromJson<String>(json['cardId']),
+      section: serializer.fromJson<String>(json['section']),
+      selectedText: serializer.fromJson<String>(json['selectedText']),
+      color: serializer.fromJson<String>(json['color']),
+      createdAt: serializer.fromJson<DateTime>(json['createdAt']),
+    );
+  }
+  @override
+  Map<String, dynamic> toJson({ValueSerializer? serializer}) {
+    serializer ??= driftRuntimeOptions.defaultSerializer;
+    return <String, dynamic>{
+      'id': serializer.toJson<String>(id),
+      'accountId': serializer.toJson<String>(accountId),
+      'cardId': serializer.toJson<String>(cardId),
+      'section': serializer.toJson<String>(section),
+      'selectedText': serializer.toJson<String>(selectedText),
+      'color': serializer.toJson<String>(color),
+      'createdAt': serializer.toJson<DateTime>(createdAt),
+    };
+  }
+
+  CardHighlight copyWith({
+    String? id,
+    String? accountId,
+    String? cardId,
+    String? section,
+    String? selectedText,
+    String? color,
+    DateTime? createdAt,
+  }) => CardHighlight(
+    id: id ?? this.id,
+    accountId: accountId ?? this.accountId,
+    cardId: cardId ?? this.cardId,
+    section: section ?? this.section,
+    selectedText: selectedText ?? this.selectedText,
+    color: color ?? this.color,
+    createdAt: createdAt ?? this.createdAt,
+  );
+  CardHighlight copyWithCompanion(CardHighlightsCompanion data) {
+    return CardHighlight(
+      id: data.id.present ? data.id.value : this.id,
+      accountId: data.accountId.present ? data.accountId.value : this.accountId,
+      cardId: data.cardId.present ? data.cardId.value : this.cardId,
+      section: data.section.present ? data.section.value : this.section,
+      selectedText: data.selectedText.present
+          ? data.selectedText.value
+          : this.selectedText,
+      color: data.color.present ? data.color.value : this.color,
+      createdAt: data.createdAt.present ? data.createdAt.value : this.createdAt,
+    );
+  }
+
+  @override
+  String toString() {
+    return (StringBuffer('CardHighlight(')
+          ..write('id: $id, ')
+          ..write('accountId: $accountId, ')
+          ..write('cardId: $cardId, ')
+          ..write('section: $section, ')
+          ..write('selectedText: $selectedText, ')
+          ..write('color: $color, ')
+          ..write('createdAt: $createdAt')
+          ..write(')'))
+        .toString();
+  }
+
+  @override
+  int get hashCode => Object.hash(
+    id,
+    accountId,
+    cardId,
+    section,
+    selectedText,
+    color,
+    createdAt,
+  );
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      (other is CardHighlight &&
+          other.id == this.id &&
+          other.accountId == this.accountId &&
+          other.cardId == this.cardId &&
+          other.section == this.section &&
+          other.selectedText == this.selectedText &&
+          other.color == this.color &&
+          other.createdAt == this.createdAt);
+}
+
+class CardHighlightsCompanion extends UpdateCompanion<CardHighlight> {
+  final Value<String> id;
+  final Value<String> accountId;
+  final Value<String> cardId;
+  final Value<String> section;
+  final Value<String> selectedText;
+  final Value<String> color;
+  final Value<DateTime> createdAt;
+  final Value<int> rowid;
+  const CardHighlightsCompanion({
+    this.id = const Value.absent(),
+    this.accountId = const Value.absent(),
+    this.cardId = const Value.absent(),
+    this.section = const Value.absent(),
+    this.selectedText = const Value.absent(),
+    this.color = const Value.absent(),
+    this.createdAt = const Value.absent(),
+    this.rowid = const Value.absent(),
+  });
+  CardHighlightsCompanion.insert({
+    required String id,
+    required String accountId,
+    required String cardId,
+    required String section,
+    required String selectedText,
+    required String color,
+    required DateTime createdAt,
+    this.rowid = const Value.absent(),
+  }) : id = Value(id),
+       accountId = Value(accountId),
+       cardId = Value(cardId),
+       section = Value(section),
+       selectedText = Value(selectedText),
+       color = Value(color),
+       createdAt = Value(createdAt);
+  static Insertable<CardHighlight> custom({
+    Expression<String>? id,
+    Expression<String>? accountId,
+    Expression<String>? cardId,
+    Expression<String>? section,
+    Expression<String>? selectedText,
+    Expression<String>? color,
+    Expression<DateTime>? createdAt,
+    Expression<int>? rowid,
+  }) {
+    return RawValuesInsertable({
+      if (id != null) 'id': id,
+      if (accountId != null) 'account_id': accountId,
+      if (cardId != null) 'card_id': cardId,
+      if (section != null) 'section': section,
+      if (selectedText != null) 'selected_text': selectedText,
+      if (color != null) 'color': color,
+      if (createdAt != null) 'created_at': createdAt,
+      if (rowid != null) 'rowid': rowid,
+    });
+  }
+
+  CardHighlightsCompanion copyWith({
+    Value<String>? id,
+    Value<String>? accountId,
+    Value<String>? cardId,
+    Value<String>? section,
+    Value<String>? selectedText,
+    Value<String>? color,
+    Value<DateTime>? createdAt,
+    Value<int>? rowid,
+  }) {
+    return CardHighlightsCompanion(
+      id: id ?? this.id,
+      accountId: accountId ?? this.accountId,
+      cardId: cardId ?? this.cardId,
+      section: section ?? this.section,
+      selectedText: selectedText ?? this.selectedText,
+      color: color ?? this.color,
+      createdAt: createdAt ?? this.createdAt,
+      rowid: rowid ?? this.rowid,
+    );
+  }
+
+  @override
+  Map<String, Expression> toColumns(bool nullToAbsent) {
+    final map = <String, Expression>{};
+    if (id.present) {
+      map['id'] = Variable<String>(id.value);
+    }
+    if (accountId.present) {
+      map['account_id'] = Variable<String>(accountId.value);
+    }
+    if (cardId.present) {
+      map['card_id'] = Variable<String>(cardId.value);
+    }
+    if (section.present) {
+      map['section'] = Variable<String>(section.value);
+    }
+    if (selectedText.present) {
+      map['selected_text'] = Variable<String>(selectedText.value);
+    }
+    if (color.present) {
+      map['color'] = Variable<String>(color.value);
+    }
+    if (createdAt.present) {
+      map['created_at'] = Variable<DateTime>(createdAt.value);
+    }
+    if (rowid.present) {
+      map['rowid'] = Variable<int>(rowid.value);
+    }
+    return map;
+  }
+
+  @override
+  String toString() {
+    return (StringBuffer('CardHighlightsCompanion(')
+          ..write('id: $id, ')
+          ..write('accountId: $accountId, ')
+          ..write('cardId: $cardId, ')
+          ..write('section: $section, ')
+          ..write('selectedText: $selectedText, ')
+          ..write('color: $color, ')
+          ..write('createdAt: $createdAt, ')
           ..write('rowid: $rowid')
           ..write(')'))
         .toString();
@@ -1396,6 +1951,555 @@ class DocumentsCompanion extends UpdateCompanion<Document> {
           ..write('folder: $folder, ')
           ..write('title: $title, ')
           ..write('body: $body, ')
+          ..write('updatedAt: $updatedAt, ')
+          ..write('rowid: $rowid')
+          ..write(')'))
+        .toString();
+  }
+}
+
+class $CollectionsTable extends Collections
+    with TableInfo<$CollectionsTable, Collection> {
+  @override
+  final GeneratedDatabase attachedDatabase;
+  final String? _alias;
+  $CollectionsTable(this.attachedDatabase, [this._alias]);
+  static const VerificationMeta _idMeta = const VerificationMeta('id');
+  @override
+  late final GeneratedColumn<String> id = GeneratedColumn<String>(
+    'id',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _accountIdMeta = const VerificationMeta(
+    'accountId',
+  );
+  @override
+  late final GeneratedColumn<String> accountId = GeneratedColumn<String>(
+    'account_id',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _typeMeta = const VerificationMeta('type');
+  @override
+  late final GeneratedColumn<String> type = GeneratedColumn<String>(
+    'type',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _nameMeta = const VerificationMeta('name');
+  @override
+  late final GeneratedColumn<String> name = GeneratedColumn<String>(
+    'name',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _iconMeta = const VerificationMeta('icon');
+  @override
+  late final GeneratedColumn<String> icon = GeneratedColumn<String>(
+    'icon',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+    defaultValue: const Constant('folder'),
+  );
+  static const VerificationMeta _colorMeta = const VerificationMeta('color');
+  @override
+  late final GeneratedColumn<String> color = GeneratedColumn<String>(
+    'color',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+    defaultValue: const Constant('green'),
+  );
+  static const VerificationMeta _archivedMeta = const VerificationMeta(
+    'archived',
+  );
+  @override
+  late final GeneratedColumn<bool> archived = GeneratedColumn<bool>(
+    'archived',
+    aliasedName,
+    false,
+    type: DriftSqlType.bool,
+    requiredDuringInsert: false,
+    defaultConstraints: GeneratedColumn.constraintIsAlways(
+      'CHECK ("archived" IN (0, 1))',
+    ),
+    defaultValue: const Constant(false),
+  );
+  static const VerificationMeta _createdAtMeta = const VerificationMeta(
+    'createdAt',
+  );
+  @override
+  late final GeneratedColumn<DateTime> createdAt = GeneratedColumn<DateTime>(
+    'created_at',
+    aliasedName,
+    false,
+    type: DriftSqlType.dateTime,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _updatedAtMeta = const VerificationMeta(
+    'updatedAt',
+  );
+  @override
+  late final GeneratedColumn<DateTime> updatedAt = GeneratedColumn<DateTime>(
+    'updated_at',
+    aliasedName,
+    false,
+    type: DriftSqlType.dateTime,
+    requiredDuringInsert: true,
+  );
+  @override
+  List<GeneratedColumn> get $columns => [
+    id,
+    accountId,
+    type,
+    name,
+    icon,
+    color,
+    archived,
+    createdAt,
+    updatedAt,
+  ];
+  @override
+  String get aliasedName => _alias ?? actualTableName;
+  @override
+  String get actualTableName => $name;
+  static const String $name = 'collections';
+  @override
+  VerificationContext validateIntegrity(
+    Insertable<Collection> instance, {
+    bool isInserting = false,
+  }) {
+    final context = VerificationContext();
+    final data = instance.toColumns(true);
+    if (data.containsKey('id')) {
+      context.handle(_idMeta, id.isAcceptableOrUnknown(data['id']!, _idMeta));
+    } else if (isInserting) {
+      context.missing(_idMeta);
+    }
+    if (data.containsKey('account_id')) {
+      context.handle(
+        _accountIdMeta,
+        accountId.isAcceptableOrUnknown(data['account_id']!, _accountIdMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_accountIdMeta);
+    }
+    if (data.containsKey('type')) {
+      context.handle(
+        _typeMeta,
+        type.isAcceptableOrUnknown(data['type']!, _typeMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_typeMeta);
+    }
+    if (data.containsKey('name')) {
+      context.handle(
+        _nameMeta,
+        name.isAcceptableOrUnknown(data['name']!, _nameMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_nameMeta);
+    }
+    if (data.containsKey('icon')) {
+      context.handle(
+        _iconMeta,
+        icon.isAcceptableOrUnknown(data['icon']!, _iconMeta),
+      );
+    }
+    if (data.containsKey('color')) {
+      context.handle(
+        _colorMeta,
+        color.isAcceptableOrUnknown(data['color']!, _colorMeta),
+      );
+    }
+    if (data.containsKey('archived')) {
+      context.handle(
+        _archivedMeta,
+        archived.isAcceptableOrUnknown(data['archived']!, _archivedMeta),
+      );
+    }
+    if (data.containsKey('created_at')) {
+      context.handle(
+        _createdAtMeta,
+        createdAt.isAcceptableOrUnknown(data['created_at']!, _createdAtMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_createdAtMeta);
+    }
+    if (data.containsKey('updated_at')) {
+      context.handle(
+        _updatedAtMeta,
+        updatedAt.isAcceptableOrUnknown(data['updated_at']!, _updatedAtMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_updatedAtMeta);
+    }
+    return context;
+  }
+
+  @override
+  Set<GeneratedColumn> get $primaryKey => {id, accountId};
+  @override
+  Collection map(Map<String, dynamic> data, {String? tablePrefix}) {
+    final effectivePrefix = tablePrefix != null ? '$tablePrefix.' : '';
+    return Collection(
+      id: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}id'],
+      )!,
+      accountId: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}account_id'],
+      )!,
+      type: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}type'],
+      )!,
+      name: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}name'],
+      )!,
+      icon: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}icon'],
+      )!,
+      color: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}color'],
+      )!,
+      archived: attachedDatabase.typeMapping.read(
+        DriftSqlType.bool,
+        data['${effectivePrefix}archived'],
+      )!,
+      createdAt: attachedDatabase.typeMapping.read(
+        DriftSqlType.dateTime,
+        data['${effectivePrefix}created_at'],
+      )!,
+      updatedAt: attachedDatabase.typeMapping.read(
+        DriftSqlType.dateTime,
+        data['${effectivePrefix}updated_at'],
+      )!,
+    );
+  }
+
+  @override
+  $CollectionsTable createAlias(String alias) {
+    return $CollectionsTable(attachedDatabase, alias);
+  }
+}
+
+class Collection extends DataClass implements Insertable<Collection> {
+  final String id;
+  final String accountId;
+  final String type;
+  final String name;
+  final String icon;
+  final String color;
+  final bool archived;
+  final DateTime createdAt;
+  final DateTime updatedAt;
+  const Collection({
+    required this.id,
+    required this.accountId,
+    required this.type,
+    required this.name,
+    required this.icon,
+    required this.color,
+    required this.archived,
+    required this.createdAt,
+    required this.updatedAt,
+  });
+  @override
+  Map<String, Expression> toColumns(bool nullToAbsent) {
+    final map = <String, Expression>{};
+    map['id'] = Variable<String>(id);
+    map['account_id'] = Variable<String>(accountId);
+    map['type'] = Variable<String>(type);
+    map['name'] = Variable<String>(name);
+    map['icon'] = Variable<String>(icon);
+    map['color'] = Variable<String>(color);
+    map['archived'] = Variable<bool>(archived);
+    map['created_at'] = Variable<DateTime>(createdAt);
+    map['updated_at'] = Variable<DateTime>(updatedAt);
+    return map;
+  }
+
+  CollectionsCompanion toCompanion(bool nullToAbsent) {
+    return CollectionsCompanion(
+      id: Value(id),
+      accountId: Value(accountId),
+      type: Value(type),
+      name: Value(name),
+      icon: Value(icon),
+      color: Value(color),
+      archived: Value(archived),
+      createdAt: Value(createdAt),
+      updatedAt: Value(updatedAt),
+    );
+  }
+
+  factory Collection.fromJson(
+    Map<String, dynamic> json, {
+    ValueSerializer? serializer,
+  }) {
+    serializer ??= driftRuntimeOptions.defaultSerializer;
+    return Collection(
+      id: serializer.fromJson<String>(json['id']),
+      accountId: serializer.fromJson<String>(json['accountId']),
+      type: serializer.fromJson<String>(json['type']),
+      name: serializer.fromJson<String>(json['name']),
+      icon: serializer.fromJson<String>(json['icon']),
+      color: serializer.fromJson<String>(json['color']),
+      archived: serializer.fromJson<bool>(json['archived']),
+      createdAt: serializer.fromJson<DateTime>(json['createdAt']),
+      updatedAt: serializer.fromJson<DateTime>(json['updatedAt']),
+    );
+  }
+  @override
+  Map<String, dynamic> toJson({ValueSerializer? serializer}) {
+    serializer ??= driftRuntimeOptions.defaultSerializer;
+    return <String, dynamic>{
+      'id': serializer.toJson<String>(id),
+      'accountId': serializer.toJson<String>(accountId),
+      'type': serializer.toJson<String>(type),
+      'name': serializer.toJson<String>(name),
+      'icon': serializer.toJson<String>(icon),
+      'color': serializer.toJson<String>(color),
+      'archived': serializer.toJson<bool>(archived),
+      'createdAt': serializer.toJson<DateTime>(createdAt),
+      'updatedAt': serializer.toJson<DateTime>(updatedAt),
+    };
+  }
+
+  Collection copyWith({
+    String? id,
+    String? accountId,
+    String? type,
+    String? name,
+    String? icon,
+    String? color,
+    bool? archived,
+    DateTime? createdAt,
+    DateTime? updatedAt,
+  }) => Collection(
+    id: id ?? this.id,
+    accountId: accountId ?? this.accountId,
+    type: type ?? this.type,
+    name: name ?? this.name,
+    icon: icon ?? this.icon,
+    color: color ?? this.color,
+    archived: archived ?? this.archived,
+    createdAt: createdAt ?? this.createdAt,
+    updatedAt: updatedAt ?? this.updatedAt,
+  );
+  Collection copyWithCompanion(CollectionsCompanion data) {
+    return Collection(
+      id: data.id.present ? data.id.value : this.id,
+      accountId: data.accountId.present ? data.accountId.value : this.accountId,
+      type: data.type.present ? data.type.value : this.type,
+      name: data.name.present ? data.name.value : this.name,
+      icon: data.icon.present ? data.icon.value : this.icon,
+      color: data.color.present ? data.color.value : this.color,
+      archived: data.archived.present ? data.archived.value : this.archived,
+      createdAt: data.createdAt.present ? data.createdAt.value : this.createdAt,
+      updatedAt: data.updatedAt.present ? data.updatedAt.value : this.updatedAt,
+    );
+  }
+
+  @override
+  String toString() {
+    return (StringBuffer('Collection(')
+          ..write('id: $id, ')
+          ..write('accountId: $accountId, ')
+          ..write('type: $type, ')
+          ..write('name: $name, ')
+          ..write('icon: $icon, ')
+          ..write('color: $color, ')
+          ..write('archived: $archived, ')
+          ..write('createdAt: $createdAt, ')
+          ..write('updatedAt: $updatedAt')
+          ..write(')'))
+        .toString();
+  }
+
+  @override
+  int get hashCode => Object.hash(
+    id,
+    accountId,
+    type,
+    name,
+    icon,
+    color,
+    archived,
+    createdAt,
+    updatedAt,
+  );
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      (other is Collection &&
+          other.id == this.id &&
+          other.accountId == this.accountId &&
+          other.type == this.type &&
+          other.name == this.name &&
+          other.icon == this.icon &&
+          other.color == this.color &&
+          other.archived == this.archived &&
+          other.createdAt == this.createdAt &&
+          other.updatedAt == this.updatedAt);
+}
+
+class CollectionsCompanion extends UpdateCompanion<Collection> {
+  final Value<String> id;
+  final Value<String> accountId;
+  final Value<String> type;
+  final Value<String> name;
+  final Value<String> icon;
+  final Value<String> color;
+  final Value<bool> archived;
+  final Value<DateTime> createdAt;
+  final Value<DateTime> updatedAt;
+  final Value<int> rowid;
+  const CollectionsCompanion({
+    this.id = const Value.absent(),
+    this.accountId = const Value.absent(),
+    this.type = const Value.absent(),
+    this.name = const Value.absent(),
+    this.icon = const Value.absent(),
+    this.color = const Value.absent(),
+    this.archived = const Value.absent(),
+    this.createdAt = const Value.absent(),
+    this.updatedAt = const Value.absent(),
+    this.rowid = const Value.absent(),
+  });
+  CollectionsCompanion.insert({
+    required String id,
+    required String accountId,
+    required String type,
+    required String name,
+    this.icon = const Value.absent(),
+    this.color = const Value.absent(),
+    this.archived = const Value.absent(),
+    required DateTime createdAt,
+    required DateTime updatedAt,
+    this.rowid = const Value.absent(),
+  }) : id = Value(id),
+       accountId = Value(accountId),
+       type = Value(type),
+       name = Value(name),
+       createdAt = Value(createdAt),
+       updatedAt = Value(updatedAt);
+  static Insertable<Collection> custom({
+    Expression<String>? id,
+    Expression<String>? accountId,
+    Expression<String>? type,
+    Expression<String>? name,
+    Expression<String>? icon,
+    Expression<String>? color,
+    Expression<bool>? archived,
+    Expression<DateTime>? createdAt,
+    Expression<DateTime>? updatedAt,
+    Expression<int>? rowid,
+  }) {
+    return RawValuesInsertable({
+      if (id != null) 'id': id,
+      if (accountId != null) 'account_id': accountId,
+      if (type != null) 'type': type,
+      if (name != null) 'name': name,
+      if (icon != null) 'icon': icon,
+      if (color != null) 'color': color,
+      if (archived != null) 'archived': archived,
+      if (createdAt != null) 'created_at': createdAt,
+      if (updatedAt != null) 'updated_at': updatedAt,
+      if (rowid != null) 'rowid': rowid,
+    });
+  }
+
+  CollectionsCompanion copyWith({
+    Value<String>? id,
+    Value<String>? accountId,
+    Value<String>? type,
+    Value<String>? name,
+    Value<String>? icon,
+    Value<String>? color,
+    Value<bool>? archived,
+    Value<DateTime>? createdAt,
+    Value<DateTime>? updatedAt,
+    Value<int>? rowid,
+  }) {
+    return CollectionsCompanion(
+      id: id ?? this.id,
+      accountId: accountId ?? this.accountId,
+      type: type ?? this.type,
+      name: name ?? this.name,
+      icon: icon ?? this.icon,
+      color: color ?? this.color,
+      archived: archived ?? this.archived,
+      createdAt: createdAt ?? this.createdAt,
+      updatedAt: updatedAt ?? this.updatedAt,
+      rowid: rowid ?? this.rowid,
+    );
+  }
+
+  @override
+  Map<String, Expression> toColumns(bool nullToAbsent) {
+    final map = <String, Expression>{};
+    if (id.present) {
+      map['id'] = Variable<String>(id.value);
+    }
+    if (accountId.present) {
+      map['account_id'] = Variable<String>(accountId.value);
+    }
+    if (type.present) {
+      map['type'] = Variable<String>(type.value);
+    }
+    if (name.present) {
+      map['name'] = Variable<String>(name.value);
+    }
+    if (icon.present) {
+      map['icon'] = Variable<String>(icon.value);
+    }
+    if (color.present) {
+      map['color'] = Variable<String>(color.value);
+    }
+    if (archived.present) {
+      map['archived'] = Variable<bool>(archived.value);
+    }
+    if (createdAt.present) {
+      map['created_at'] = Variable<DateTime>(createdAt.value);
+    }
+    if (updatedAt.present) {
+      map['updated_at'] = Variable<DateTime>(updatedAt.value);
+    }
+    if (rowid.present) {
+      map['rowid'] = Variable<int>(rowid.value);
+    }
+    return map;
+  }
+
+  @override
+  String toString() {
+    return (StringBuffer('CollectionsCompanion(')
+          ..write('id: $id, ')
+          ..write('accountId: $accountId, ')
+          ..write('type: $type, ')
+          ..write('name: $name, ')
+          ..write('icon: $icon, ')
+          ..write('color: $color, ')
+          ..write('archived: $archived, ')
+          ..write('createdAt: $createdAt, ')
           ..write('updatedAt: $updatedAt, ')
           ..write('rowid: $rowid')
           ..write(')'))
@@ -2626,7 +3730,9 @@ abstract class _$AppDatabase extends GeneratedDatabase {
   _$AppDatabase(QueryExecutor e) : super(e);
   $AppDatabaseManager get managers => $AppDatabaseManager(this);
   late final $CardsTable cards = $CardsTable(this);
+  late final $CardHighlightsTable cardHighlights = $CardHighlightsTable(this);
   late final $DocumentsTable documents = $DocumentsTable(this);
+  late final $CollectionsTable collections = $CollectionsTable(this);
   late final $ReviewEventsTable reviewEvents = $ReviewEventsTable(this);
   late final $SyncQueueTable syncQueue = $SyncQueueTable(this);
   @override
@@ -2635,7 +3741,9 @@ abstract class _$AppDatabase extends GeneratedDatabase {
   @override
   List<DatabaseSchemaEntity> get allSchemaEntities => [
     cards,
+    cardHighlights,
     documents,
+    collections,
     reviewEvents,
     syncQueue,
   ];
@@ -2647,9 +3755,11 @@ typedef $$CardsTableCreateCompanionBuilder =
       required String accountId,
       required String type,
       required String folder,
+      Value<String> source,
       required String question,
       required String optionsJson,
       required String answerJson,
+      Value<String> content,
       Value<String> noteContent,
       Value<String> explanation,
       required String tagsJson,
@@ -2669,9 +3779,11 @@ typedef $$CardsTableUpdateCompanionBuilder =
       Value<String> accountId,
       Value<String> type,
       Value<String> folder,
+      Value<String> source,
       Value<String> question,
       Value<String> optionsJson,
       Value<String> answerJson,
+      Value<String> content,
       Value<String> noteContent,
       Value<String> explanation,
       Value<String> tagsJson,
@@ -2714,6 +3826,11 @@ class $$CardsTableFilterComposer extends Composer<_$AppDatabase, $CardsTable> {
     builder: (column) => ColumnFilters(column),
   );
 
+  ColumnFilters<String> get source => $composableBuilder(
+    column: $table.source,
+    builder: (column) => ColumnFilters(column),
+  );
+
   ColumnFilters<String> get question => $composableBuilder(
     column: $table.question,
     builder: (column) => ColumnFilters(column),
@@ -2726,6 +3843,11 @@ class $$CardsTableFilterComposer extends Composer<_$AppDatabase, $CardsTable> {
 
   ColumnFilters<String> get answerJson => $composableBuilder(
     column: $table.answerJson,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get content => $composableBuilder(
+    column: $table.content,
     builder: (column) => ColumnFilters(column),
   );
 
@@ -2814,6 +3936,11 @@ class $$CardsTableOrderingComposer
     builder: (column) => ColumnOrderings(column),
   );
 
+  ColumnOrderings<String> get source => $composableBuilder(
+    column: $table.source,
+    builder: (column) => ColumnOrderings(column),
+  );
+
   ColumnOrderings<String> get question => $composableBuilder(
     column: $table.question,
     builder: (column) => ColumnOrderings(column),
@@ -2826,6 +3953,11 @@ class $$CardsTableOrderingComposer
 
   ColumnOrderings<String> get answerJson => $composableBuilder(
     column: $table.answerJson,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get content => $composableBuilder(
+    column: $table.content,
     builder: (column) => ColumnOrderings(column),
   );
 
@@ -2906,6 +4038,9 @@ class $$CardsTableAnnotationComposer
   GeneratedColumn<String> get folder =>
       $composableBuilder(column: $table.folder, builder: (column) => column);
 
+  GeneratedColumn<String> get source =>
+      $composableBuilder(column: $table.source, builder: (column) => column);
+
   GeneratedColumn<String> get question =>
       $composableBuilder(column: $table.question, builder: (column) => column);
 
@@ -2918,6 +4053,9 @@ class $$CardsTableAnnotationComposer
     column: $table.answerJson,
     builder: (column) => column,
   );
+
+  GeneratedColumn<String> get content =>
+      $composableBuilder(column: $table.content, builder: (column) => column);
 
   GeneratedColumn<String> get noteContent => $composableBuilder(
     column: $table.noteContent,
@@ -2989,9 +4127,11 @@ class $$CardsTableTableManager
                 Value<String> accountId = const Value.absent(),
                 Value<String> type = const Value.absent(),
                 Value<String> folder = const Value.absent(),
+                Value<String> source = const Value.absent(),
                 Value<String> question = const Value.absent(),
                 Value<String> optionsJson = const Value.absent(),
                 Value<String> answerJson = const Value.absent(),
+                Value<String> content = const Value.absent(),
                 Value<String> noteContent = const Value.absent(),
                 Value<String> explanation = const Value.absent(),
                 Value<String> tagsJson = const Value.absent(),
@@ -3009,9 +4149,11 @@ class $$CardsTableTableManager
                 accountId: accountId,
                 type: type,
                 folder: folder,
+                source: source,
                 question: question,
                 optionsJson: optionsJson,
                 answerJson: answerJson,
+                content: content,
                 noteContent: noteContent,
                 explanation: explanation,
                 tagsJson: tagsJson,
@@ -3031,9 +4173,11 @@ class $$CardsTableTableManager
                 required String accountId,
                 required String type,
                 required String folder,
+                Value<String> source = const Value.absent(),
                 required String question,
                 required String optionsJson,
                 required String answerJson,
+                Value<String> content = const Value.absent(),
                 Value<String> noteContent = const Value.absent(),
                 Value<String> explanation = const Value.absent(),
                 required String tagsJson,
@@ -3051,9 +4195,11 @@ class $$CardsTableTableManager
                 accountId: accountId,
                 type: type,
                 folder: folder,
+                source: source,
                 question: question,
                 optionsJson: optionsJson,
                 answerJson: answerJson,
+                content: content,
                 noteContent: noteContent,
                 explanation: explanation,
                 tagsJson: tagsJson,
@@ -3087,6 +4233,248 @@ typedef $$CardsTableProcessedTableManager =
       $$CardsTableUpdateCompanionBuilder,
       (Card, BaseReferences<_$AppDatabase, $CardsTable, Card>),
       Card,
+      PrefetchHooks Function()
+    >;
+typedef $$CardHighlightsTableCreateCompanionBuilder =
+    CardHighlightsCompanion Function({
+      required String id,
+      required String accountId,
+      required String cardId,
+      required String section,
+      required String selectedText,
+      required String color,
+      required DateTime createdAt,
+      Value<int> rowid,
+    });
+typedef $$CardHighlightsTableUpdateCompanionBuilder =
+    CardHighlightsCompanion Function({
+      Value<String> id,
+      Value<String> accountId,
+      Value<String> cardId,
+      Value<String> section,
+      Value<String> selectedText,
+      Value<String> color,
+      Value<DateTime> createdAt,
+      Value<int> rowid,
+    });
+
+class $$CardHighlightsTableFilterComposer
+    extends Composer<_$AppDatabase, $CardHighlightsTable> {
+  $$CardHighlightsTableFilterComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  ColumnFilters<String> get id => $composableBuilder(
+    column: $table.id,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get accountId => $composableBuilder(
+    column: $table.accountId,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get cardId => $composableBuilder(
+    column: $table.cardId,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get section => $composableBuilder(
+    column: $table.section,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get selectedText => $composableBuilder(
+    column: $table.selectedText,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get color => $composableBuilder(
+    column: $table.color,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<DateTime> get createdAt => $composableBuilder(
+    column: $table.createdAt,
+    builder: (column) => ColumnFilters(column),
+  );
+}
+
+class $$CardHighlightsTableOrderingComposer
+    extends Composer<_$AppDatabase, $CardHighlightsTable> {
+  $$CardHighlightsTableOrderingComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  ColumnOrderings<String> get id => $composableBuilder(
+    column: $table.id,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get accountId => $composableBuilder(
+    column: $table.accountId,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get cardId => $composableBuilder(
+    column: $table.cardId,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get section => $composableBuilder(
+    column: $table.section,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get selectedText => $composableBuilder(
+    column: $table.selectedText,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get color => $composableBuilder(
+    column: $table.color,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<DateTime> get createdAt => $composableBuilder(
+    column: $table.createdAt,
+    builder: (column) => ColumnOrderings(column),
+  );
+}
+
+class $$CardHighlightsTableAnnotationComposer
+    extends Composer<_$AppDatabase, $CardHighlightsTable> {
+  $$CardHighlightsTableAnnotationComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  GeneratedColumn<String> get id =>
+      $composableBuilder(column: $table.id, builder: (column) => column);
+
+  GeneratedColumn<String> get accountId =>
+      $composableBuilder(column: $table.accountId, builder: (column) => column);
+
+  GeneratedColumn<String> get cardId =>
+      $composableBuilder(column: $table.cardId, builder: (column) => column);
+
+  GeneratedColumn<String> get section =>
+      $composableBuilder(column: $table.section, builder: (column) => column);
+
+  GeneratedColumn<String> get selectedText => $composableBuilder(
+    column: $table.selectedText,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<String> get color =>
+      $composableBuilder(column: $table.color, builder: (column) => column);
+
+  GeneratedColumn<DateTime> get createdAt =>
+      $composableBuilder(column: $table.createdAt, builder: (column) => column);
+}
+
+class $$CardHighlightsTableTableManager
+    extends
+        RootTableManager<
+          _$AppDatabase,
+          $CardHighlightsTable,
+          CardHighlight,
+          $$CardHighlightsTableFilterComposer,
+          $$CardHighlightsTableOrderingComposer,
+          $$CardHighlightsTableAnnotationComposer,
+          $$CardHighlightsTableCreateCompanionBuilder,
+          $$CardHighlightsTableUpdateCompanionBuilder,
+          (
+            CardHighlight,
+            BaseReferences<_$AppDatabase, $CardHighlightsTable, CardHighlight>,
+          ),
+          CardHighlight,
+          PrefetchHooks Function()
+        > {
+  $$CardHighlightsTableTableManager(
+    _$AppDatabase db,
+    $CardHighlightsTable table,
+  ) : super(
+        TableManagerState(
+          db: db,
+          table: table,
+          createFilteringComposer: () =>
+              $$CardHighlightsTableFilterComposer($db: db, $table: table),
+          createOrderingComposer: () =>
+              $$CardHighlightsTableOrderingComposer($db: db, $table: table),
+          createComputedFieldComposer: () =>
+              $$CardHighlightsTableAnnotationComposer($db: db, $table: table),
+          updateCompanionCallback:
+              ({
+                Value<String> id = const Value.absent(),
+                Value<String> accountId = const Value.absent(),
+                Value<String> cardId = const Value.absent(),
+                Value<String> section = const Value.absent(),
+                Value<String> selectedText = const Value.absent(),
+                Value<String> color = const Value.absent(),
+                Value<DateTime> createdAt = const Value.absent(),
+                Value<int> rowid = const Value.absent(),
+              }) => CardHighlightsCompanion(
+                id: id,
+                accountId: accountId,
+                cardId: cardId,
+                section: section,
+                selectedText: selectedText,
+                color: color,
+                createdAt: createdAt,
+                rowid: rowid,
+              ),
+          createCompanionCallback:
+              ({
+                required String id,
+                required String accountId,
+                required String cardId,
+                required String section,
+                required String selectedText,
+                required String color,
+                required DateTime createdAt,
+                Value<int> rowid = const Value.absent(),
+              }) => CardHighlightsCompanion.insert(
+                id: id,
+                accountId: accountId,
+                cardId: cardId,
+                section: section,
+                selectedText: selectedText,
+                color: color,
+                createdAt: createdAt,
+                rowid: rowid,
+              ),
+          withReferenceMapper: (p0) => p0
+              .map((e) => (e.readTable(table), BaseReferences(db, table, e)))
+              .toList(),
+          prefetchHooksCallback: null,
+        ),
+      );
+}
+
+typedef $$CardHighlightsTableProcessedTableManager =
+    ProcessedTableManager<
+      _$AppDatabase,
+      $CardHighlightsTable,
+      CardHighlight,
+      $$CardHighlightsTableFilterComposer,
+      $$CardHighlightsTableOrderingComposer,
+      $$CardHighlightsTableAnnotationComposer,
+      $$CardHighlightsTableCreateCompanionBuilder,
+      $$CardHighlightsTableUpdateCompanionBuilder,
+      (
+        CardHighlight,
+        BaseReferences<_$AppDatabase, $CardHighlightsTable, CardHighlight>,
+      ),
+      CardHighlight,
       PrefetchHooks Function()
     >;
 typedef $$DocumentsTableCreateCompanionBuilder =
@@ -3300,6 +4688,282 @@ typedef $$DocumentsTableProcessedTableManager =
       $$DocumentsTableUpdateCompanionBuilder,
       (Document, BaseReferences<_$AppDatabase, $DocumentsTable, Document>),
       Document,
+      PrefetchHooks Function()
+    >;
+typedef $$CollectionsTableCreateCompanionBuilder =
+    CollectionsCompanion Function({
+      required String id,
+      required String accountId,
+      required String type,
+      required String name,
+      Value<String> icon,
+      Value<String> color,
+      Value<bool> archived,
+      required DateTime createdAt,
+      required DateTime updatedAt,
+      Value<int> rowid,
+    });
+typedef $$CollectionsTableUpdateCompanionBuilder =
+    CollectionsCompanion Function({
+      Value<String> id,
+      Value<String> accountId,
+      Value<String> type,
+      Value<String> name,
+      Value<String> icon,
+      Value<String> color,
+      Value<bool> archived,
+      Value<DateTime> createdAt,
+      Value<DateTime> updatedAt,
+      Value<int> rowid,
+    });
+
+class $$CollectionsTableFilterComposer
+    extends Composer<_$AppDatabase, $CollectionsTable> {
+  $$CollectionsTableFilterComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  ColumnFilters<String> get id => $composableBuilder(
+    column: $table.id,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get accountId => $composableBuilder(
+    column: $table.accountId,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get type => $composableBuilder(
+    column: $table.type,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get name => $composableBuilder(
+    column: $table.name,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get icon => $composableBuilder(
+    column: $table.icon,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get color => $composableBuilder(
+    column: $table.color,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<bool> get archived => $composableBuilder(
+    column: $table.archived,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<DateTime> get createdAt => $composableBuilder(
+    column: $table.createdAt,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<DateTime> get updatedAt => $composableBuilder(
+    column: $table.updatedAt,
+    builder: (column) => ColumnFilters(column),
+  );
+}
+
+class $$CollectionsTableOrderingComposer
+    extends Composer<_$AppDatabase, $CollectionsTable> {
+  $$CollectionsTableOrderingComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  ColumnOrderings<String> get id => $composableBuilder(
+    column: $table.id,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get accountId => $composableBuilder(
+    column: $table.accountId,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get type => $composableBuilder(
+    column: $table.type,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get name => $composableBuilder(
+    column: $table.name,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get icon => $composableBuilder(
+    column: $table.icon,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get color => $composableBuilder(
+    column: $table.color,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<bool> get archived => $composableBuilder(
+    column: $table.archived,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<DateTime> get createdAt => $composableBuilder(
+    column: $table.createdAt,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<DateTime> get updatedAt => $composableBuilder(
+    column: $table.updatedAt,
+    builder: (column) => ColumnOrderings(column),
+  );
+}
+
+class $$CollectionsTableAnnotationComposer
+    extends Composer<_$AppDatabase, $CollectionsTable> {
+  $$CollectionsTableAnnotationComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  GeneratedColumn<String> get id =>
+      $composableBuilder(column: $table.id, builder: (column) => column);
+
+  GeneratedColumn<String> get accountId =>
+      $composableBuilder(column: $table.accountId, builder: (column) => column);
+
+  GeneratedColumn<String> get type =>
+      $composableBuilder(column: $table.type, builder: (column) => column);
+
+  GeneratedColumn<String> get name =>
+      $composableBuilder(column: $table.name, builder: (column) => column);
+
+  GeneratedColumn<String> get icon =>
+      $composableBuilder(column: $table.icon, builder: (column) => column);
+
+  GeneratedColumn<String> get color =>
+      $composableBuilder(column: $table.color, builder: (column) => column);
+
+  GeneratedColumn<bool> get archived =>
+      $composableBuilder(column: $table.archived, builder: (column) => column);
+
+  GeneratedColumn<DateTime> get createdAt =>
+      $composableBuilder(column: $table.createdAt, builder: (column) => column);
+
+  GeneratedColumn<DateTime> get updatedAt =>
+      $composableBuilder(column: $table.updatedAt, builder: (column) => column);
+}
+
+class $$CollectionsTableTableManager
+    extends
+        RootTableManager<
+          _$AppDatabase,
+          $CollectionsTable,
+          Collection,
+          $$CollectionsTableFilterComposer,
+          $$CollectionsTableOrderingComposer,
+          $$CollectionsTableAnnotationComposer,
+          $$CollectionsTableCreateCompanionBuilder,
+          $$CollectionsTableUpdateCompanionBuilder,
+          (
+            Collection,
+            BaseReferences<_$AppDatabase, $CollectionsTable, Collection>,
+          ),
+          Collection,
+          PrefetchHooks Function()
+        > {
+  $$CollectionsTableTableManager(_$AppDatabase db, $CollectionsTable table)
+    : super(
+        TableManagerState(
+          db: db,
+          table: table,
+          createFilteringComposer: () =>
+              $$CollectionsTableFilterComposer($db: db, $table: table),
+          createOrderingComposer: () =>
+              $$CollectionsTableOrderingComposer($db: db, $table: table),
+          createComputedFieldComposer: () =>
+              $$CollectionsTableAnnotationComposer($db: db, $table: table),
+          updateCompanionCallback:
+              ({
+                Value<String> id = const Value.absent(),
+                Value<String> accountId = const Value.absent(),
+                Value<String> type = const Value.absent(),
+                Value<String> name = const Value.absent(),
+                Value<String> icon = const Value.absent(),
+                Value<String> color = const Value.absent(),
+                Value<bool> archived = const Value.absent(),
+                Value<DateTime> createdAt = const Value.absent(),
+                Value<DateTime> updatedAt = const Value.absent(),
+                Value<int> rowid = const Value.absent(),
+              }) => CollectionsCompanion(
+                id: id,
+                accountId: accountId,
+                type: type,
+                name: name,
+                icon: icon,
+                color: color,
+                archived: archived,
+                createdAt: createdAt,
+                updatedAt: updatedAt,
+                rowid: rowid,
+              ),
+          createCompanionCallback:
+              ({
+                required String id,
+                required String accountId,
+                required String type,
+                required String name,
+                Value<String> icon = const Value.absent(),
+                Value<String> color = const Value.absent(),
+                Value<bool> archived = const Value.absent(),
+                required DateTime createdAt,
+                required DateTime updatedAt,
+                Value<int> rowid = const Value.absent(),
+              }) => CollectionsCompanion.insert(
+                id: id,
+                accountId: accountId,
+                type: type,
+                name: name,
+                icon: icon,
+                color: color,
+                archived: archived,
+                createdAt: createdAt,
+                updatedAt: updatedAt,
+                rowid: rowid,
+              ),
+          withReferenceMapper: (p0) => p0
+              .map((e) => (e.readTable(table), BaseReferences(db, table, e)))
+              .toList(),
+          prefetchHooksCallback: null,
+        ),
+      );
+}
+
+typedef $$CollectionsTableProcessedTableManager =
+    ProcessedTableManager<
+      _$AppDatabase,
+      $CollectionsTable,
+      Collection,
+      $$CollectionsTableFilterComposer,
+      $$CollectionsTableOrderingComposer,
+      $$CollectionsTableAnnotationComposer,
+      $$CollectionsTableCreateCompanionBuilder,
+      $$CollectionsTableUpdateCompanionBuilder,
+      (
+        Collection,
+        BaseReferences<_$AppDatabase, $CollectionsTable, Collection>,
+      ),
+      Collection,
       PrefetchHooks Function()
     >;
 typedef $$ReviewEventsTableCreateCompanionBuilder =
@@ -3906,8 +5570,12 @@ class $AppDatabaseManager {
   $AppDatabaseManager(this._db);
   $$CardsTableTableManager get cards =>
       $$CardsTableTableManager(_db, _db.cards);
+  $$CardHighlightsTableTableManager get cardHighlights =>
+      $$CardHighlightsTableTableManager(_db, _db.cardHighlights);
   $$DocumentsTableTableManager get documents =>
       $$DocumentsTableTableManager(_db, _db.documents);
+  $$CollectionsTableTableManager get collections =>
+      $$CollectionsTableTableManager(_db, _db.collections);
   $$ReviewEventsTableTableManager get reviewEvents =>
       $$ReviewEventsTableTableManager(_db, _db.reviewEvents);
   $$SyncQueueTableTableManager get syncQueue =>

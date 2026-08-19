@@ -4,6 +4,8 @@ import 'package:drift/drift.dart';
 import 'package:drift_flutter/drift_flutter.dart';
 
 import '../models/card_model.dart';
+import '../models/card_highlight_model.dart';
+import '../models/collection_model.dart';
 import '../models/document_model.dart';
 
 part 'app_database.g.dart';
@@ -13,9 +15,11 @@ class Cards extends Table {
   TextColumn get accountId => text()();
   TextColumn get type => text()();
   TextColumn get folder => text()();
+  TextColumn get source => text().withDefault(const Constant(''))();
   TextColumn get question => text()();
   TextColumn get optionsJson => text()();
   TextColumn get answerJson => text()();
+  TextColumn get content => text().withDefault(const Constant(''))();
   TextColumn get noteContent => text().withDefault(const Constant(''))();
   TextColumn get explanation => text().withDefault(const Constant(''))();
   TextColumn get tagsJson => text()();
@@ -32,12 +36,40 @@ class Cards extends Table {
   Set<Column<Object>> get primaryKey => {id, accountId};
 }
 
+class CardHighlights extends Table {
+  TextColumn get id => text()();
+  TextColumn get accountId => text()();
+  TextColumn get cardId => text()();
+  TextColumn get section => text()();
+  TextColumn get selectedText => text()();
+  TextColumn get color => text()();
+  DateTimeColumn get createdAt => dateTime()();
+
+  @override
+  Set<Column<Object>> get primaryKey => {id, accountId};
+}
+
 class Documents extends Table {
   TextColumn get id => text()();
   TextColumn get accountId => text()();
   TextColumn get folder => text()();
   TextColumn get title => text()();
   TextColumn get body => text()();
+  DateTimeColumn get updatedAt => dateTime()();
+
+  @override
+  Set<Column<Object>> get primaryKey => {id, accountId};
+}
+
+class Collections extends Table {
+  TextColumn get id => text()();
+  TextColumn get accountId => text()();
+  TextColumn get type => text()();
+  TextColumn get name => text()();
+  TextColumn get icon => text().withDefault(const Constant('folder'))();
+  TextColumn get color => text().withDefault(const Constant('green'))();
+  BoolColumn get archived => boolean().withDefault(const Constant(false))();
+  DateTimeColumn get createdAt => dateTime()();
   DateTimeColumn get updatedAt => dateTime()();
 
   @override
@@ -76,7 +108,9 @@ class SyncQueue extends Table {
   Set<Column<Object>> get primaryKey => {id, accountId};
 }
 
-@DriftDatabase(tables: [Cards, Documents, ReviewEvents, SyncQueue])
+@DriftDatabase(
+  tables: [Cards, CardHighlights, Documents, Collections, ReviewEvents, SyncQueue],
+)
 class AppDatabase extends _$AppDatabase {
   AppDatabase([QueryExecutor? executor])
     : super(
@@ -91,7 +125,7 @@ class AppDatabase extends _$AppDatabase {
       );
 
   @override
-  int get schemaVersion => 6;
+  int get schemaVersion => 10;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -114,6 +148,26 @@ class AppDatabase extends _$AppDatabase {
         );
         await _createIndexes();
       }
+      if (from < 7) {
+        await m.createTable(collections);
+        await _createIndexes();
+      }
+      if (from < 8) {
+        await m.addColumn(cards, cards.content);
+        // Before schema 8, note cards stored their back/content in the
+        // note_content column. Move that legacy value once, then leave
+        // note_content available for the user's separate personal note.
+        await customStatement(
+          "UPDATE cards "
+          "SET content = note_content, note_content = '' "
+          "WHERE type = 'note' AND TRIM(note_content) <> ''",
+        );
+      }
+      if (from < 9) await m.addColumn(cards, cards.source);
+      if (from < 10) {
+        await m.createTable(cardHighlights);
+        await _normalizeCardSortOrder();
+      }
     },
   );
 
@@ -131,6 +185,10 @@ class AppDatabase extends _$AppDatabase {
       'ON documents (account_id, updated_at)',
     );
     await customStatement(
+      'CREATE INDEX IF NOT EXISTS idx_collections_account_type_updated '
+      'ON collections (account_id, type, archived, updated_at)',
+    );
+    await customStatement(
       'CREATE INDEX IF NOT EXISTS idx_review_events_account_reviewed '
       'ON review_events (account_id, reviewed_at)',
     );
@@ -138,6 +196,41 @@ class AppDatabase extends _$AppDatabase {
       'CREATE INDEX IF NOT EXISTS idx_sync_queue_account_status_created '
       'ON sync_queue (account_id, status, created_at)',
     );
+    await customStatement(
+      'CREATE INDEX IF NOT EXISTS idx_card_highlights_account_card_section '
+      'ON card_highlights (account_id, card_id, section, created_at)',
+    );
+  }
+
+  Future<void> _normalizeCardSortOrder() async {
+    final rows =
+        await (select(cards)
+              ..orderBy([
+                (row) => OrderingTerm(expression: row.accountId),
+                (row) => OrderingTerm(expression: row.folder),
+                (row) => OrderingTerm(expression: row.sortOrder),
+                (row) => OrderingTerm(expression: row.createdAt),
+                (row) => OrderingTerm(expression: row.id),
+              ]))
+            .get();
+
+    var currentAccount = '';
+    var currentFolder = '';
+    var nextOrder = 0;
+    for (final row in rows) {
+      if (row.accountId != currentAccount || row.folder != currentFolder) {
+        currentAccount = row.accountId;
+        currentFolder = row.folder;
+        nextOrder = 0;
+      }
+      nextOrder++;
+      if (row.sortOrder == nextOrder) continue;
+      await (update(cards)..where(
+            (value) =>
+                value.accountId.equals(row.accountId) & value.id.equals(row.id),
+          ))
+          .write(CardsCompanion(sortOrder: Value(nextOrder)));
+    }
   }
 
   Future<List<CardModel>> loadCards(String accountId) async {
@@ -145,7 +238,7 @@ class AppDatabase extends _$AppDatabase {
         await (select(cards)
               ..where((row) => row.accountId.equals(accountId))
               ..orderBy([
-                (row) => OrderingTerm(expression: row.dueAt),
+                (row) => OrderingTerm(expression: row.sortOrder),
                 (row) => OrderingTerm(expression: row.createdAt),
                 (row) => OrderingTerm(expression: row.id),
               ]))
@@ -177,6 +270,16 @@ class AppDatabase extends _$AppDatabase {
   Future<void> saveCard(CardModel value) =>
       into(cards).insertOnConflictUpdate(_cardToCompanion(value));
 
+  Future<int> nextCardSortOrder(String accountId, String folder) async {
+    final row = await customSelect(
+      'SELECT COALESCE(MAX(sort_order), -1) + 1 AS next_sort_order '
+      'FROM cards WHERE account_id = ? AND folder = ?',
+      variables: [Variable<String>(accountId), Variable<String>(folder)],
+      readsFrom: {cards},
+    ).getSingle();
+    return row.read<int>('next_sort_order');
+  }
+
   Future<void> saveCards(Iterable<CardModel> values) async {
     final companions = values.map(_cardToCompanion).toList();
     if (companions.isEmpty) return;
@@ -188,6 +291,48 @@ class AppDatabase extends _$AppDatabase {
   Future<void> deleteCard(String id, String accountId) => (delete(
     cards,
   )..where((row) => row.id.equals(id) & row.accountId.equals(accountId))).go();
+
+  Future<List<CardHighlightModel>> loadCardHighlights(
+    String accountId, {
+    String? cardId,
+  }) async {
+    final query = select(cardHighlights)
+      ..where((row) => row.accountId.equals(accountId))
+      ..orderBy([
+        (row) => OrderingTerm(expression: row.createdAt),
+        (row) => OrderingTerm(expression: row.id),
+      ]);
+    if (cardId != null && cardId.trim().isNotEmpty) {
+      query.where((row) => row.cardId.equals(cardId.trim()));
+    }
+    final rows = await query.get();
+    return rows.map(_highlightFromRow).toList();
+  }
+
+  Future<void> saveCardHighlight(CardHighlightModel value) =>
+      into(cardHighlights).insertOnConflictUpdate(_highlightToCompanion(value));
+
+  Future<void> saveCardHighlights(Iterable<CardHighlightModel> values) async {
+    final companions = values.map(_highlightToCompanion).toList();
+    if (companions.isEmpty) return;
+    await batch((batch) {
+      batch.insertAllOnConflictUpdate(cardHighlights, companions);
+    });
+  }
+
+  Future<void> deleteCardHighlight(String accountId, String id) =>
+      (delete(cardHighlights)..where(
+            (row) =>
+                row.accountId.equals(accountId) & row.id.equals(id),
+          ))
+          .go();
+
+  Future<void> deleteHighlightsByCard(String accountId, String cardId) =>
+      (delete(cardHighlights)..where(
+            (row) =>
+                row.accountId.equals(accountId) & row.cardId.equals(cardId),
+          ))
+          .go();
 
   Future<void> deleteCardsByIds(String accountId, Iterable<String> ids) async {
     final values = ids.where((id) => id.isNotEmpty).toSet();
@@ -236,6 +381,64 @@ class AppDatabase extends _$AppDatabase {
                   : Value(updatedAt),
             ),
           );
+
+  /// Reset a deck's local review state with one SQLite UPDATE. The server
+  /// receives a deck-level epoch mutation; individual CARD queue rows are
+  /// discarded so a 1,210-card relearn never becomes 1,210 network writes.
+  Future<int> resetDeckProgress({
+    required String accountId,
+    required String folder,
+    required DateTime dueAt,
+  }) async {
+    final updated =
+        await (update(cards)..where(
+              (row) =>
+                  row.accountId.equals(accountId) & row.folder.equals(folder),
+            ))
+            .write(
+              CardsCompanion(
+                dueAt: Value(dueAt),
+                reviews: const Value(0),
+                mastery: const Value(''),
+                fsrsJson: Value(
+                  jsonEncode({
+                    'state': FsrsState.newCard.name,
+                    'dueAt': dueAt.toIso8601String(),
+                    'stability': 0,
+                    'difficulty': 5,
+                    'reps': 0,
+                    'lapses': 0,
+                  }),
+                ),
+              ),
+            );
+    await (delete(reviewEvents)..where(
+          (row) => row.accountId.equals(accountId) & row.folder.equals(folder),
+        ))
+        .go();
+    return updated;
+  }
+
+  Future<int> discardPendingCardSyncByFolder({
+    required String accountId,
+    required String folder,
+  }) {
+    return customUpdate(
+      'DELETE FROM sync_queue '
+      'WHERE account_id = ? '
+      "AND object_type = 'CARD' "
+      "AND status IN ('pending', 'failed') "
+      'AND object_id IN ('
+      'SELECT id FROM cards WHERE account_id = ? AND folder = ?'
+      ')',
+      variables: [
+        Variable<String>(accountId),
+        Variable<String>(accountId),
+        Variable<String>(folder),
+      ],
+      updates: {syncQueue},
+    );
+  }
 
   Future<void> deleteReviewEventsByCard(String cardId, String accountId) =>
       (delete(reviewEvents)..where(
@@ -491,6 +694,54 @@ class AppDatabase extends _$AppDatabase {
     });
   }
 
+  Future<List<CollectionModel>> loadCollections(String accountId) async {
+    final rows =
+        await (select(collections)
+              ..where((row) => row.accountId.equals(accountId))
+              ..orderBy([
+                (row) => OrderingTerm.desc(row.updatedAt),
+                (row) => OrderingTerm(expression: row.name),
+              ]))
+            .get();
+    return rows.map(_collectionFromRow).toList();
+  }
+
+  Future<CollectionModel?> loadCollection(String id, String accountId) async {
+    final row =
+        await (select(collections)..where(
+              (value) =>
+                  value.id.equals(id) & value.accountId.equals(accountId),
+            ))
+            .getSingleOrNull();
+    return row == null ? null : _collectionFromRow(row);
+  }
+
+  Future<void> saveCollection(CollectionModel value) =>
+      into(collections).insertOnConflictUpdate(_collectionToCompanion(value));
+
+  Future<void> saveCollections(Iterable<CollectionModel> values) async {
+    final companions = values.map(_collectionToCompanion).toList();
+    if (companions.isEmpty) return;
+    await batch((batch) {
+      batch.insertAllOnConflictUpdate(collections, companions);
+    });
+  }
+
+  Future<void> deleteCollection(String id, String accountId) => (delete(
+    collections,
+  )..where((row) => row.id.equals(id) & row.accountId.equals(accountId))).go();
+
+  Future<int> updateDocumentsFolder({
+    required String accountId,
+    required String fromFolder,
+    required String toFolder,
+  }) =>
+      (update(documents)..where(
+            (row) =>
+                row.accountId.equals(accountId) & row.folder.equals(fromFolder),
+          ))
+          .write(DocumentsCompanion(folder: Value(toFolder)));
+
   Future<void> enqueueSyncItems(Iterable<SyncQueueItemModel> values) async {
     final latestByObject = <String, SyncQueueItemModel>{};
     for (final value in values) {
@@ -693,9 +944,11 @@ class AppDatabase extends _$AppDatabase {
         orElse: () => CardType.single,
       ),
       folder: row.folder,
+      source: row.source,
       question: row.question,
       options: Map<String, String>.from(jsonDecode(row.optionsJson) as Map),
       answer: List<String>.from(jsonDecode(row.answerJson) as List),
+      content: row.content,
       noteContent: row.noteContent,
       explanation: row.explanation,
       tags: List<String>.from(jsonDecode(row.tagsJson) as List),
@@ -724,9 +977,11 @@ class AppDatabase extends _$AppDatabase {
     accountId: value.accountId,
     type: value.type.name,
     folder: value.folder,
+    source: Value(value.source),
     question: value.question,
     optionsJson: jsonEncode(value.options),
     answerJson: jsonEncode(value.answer),
+    content: Value(value.content),
     noteContent: Value(value.noteContent),
     explanation: Value(value.explanation),
     tagsJson: jsonEncode(value.tags),
@@ -746,4 +1001,56 @@ class AppDatabase extends _$AppDatabase {
       'lapses': value.fsrs.lapses,
     }),
   );
+
+  CardHighlightModel _highlightFromRow(CardHighlight row) => CardHighlightModel(
+    id: row.id,
+    accountId: row.accountId,
+    cardId: row.cardId,
+    section: CardHighlightSection.values.firstWhere(
+      (value) => value.name == row.section,
+      orElse: () => CardHighlightSection.question,
+    ),
+    selectedText: row.selectedText,
+    color: row.color,
+    createdAt: row.createdAt,
+  );
+
+  CardHighlightsCompanion _highlightToCompanion(CardHighlightModel value) =>
+      CardHighlightsCompanion.insert(
+        id: value.id,
+        accountId: value.accountId,
+        cardId: value.cardId,
+        section: value.section.name,
+        selectedText: value.selectedText,
+        color: value.color,
+        createdAt: value.createdAt,
+      );
+
+  CollectionModel _collectionFromRow(Collection row) => CollectionModel(
+    id: row.id,
+    accountId: row.accountId,
+    type: CollectionType.values.firstWhere(
+      (value) => value.name == row.type,
+      orElse: () => CollectionType.deck,
+    ),
+    name: row.name,
+    icon: row.icon,
+    color: row.color,
+    archived: row.archived,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  );
+
+  CollectionsCompanion _collectionToCompanion(CollectionModel value) =>
+      CollectionsCompanion.insert(
+        id: value.id,
+        accountId: value.accountId,
+        type: value.type.name,
+        name: value.name,
+        icon: Value(value.icon),
+        color: Value(value.color),
+        archived: Value(value.archived),
+        createdAt: value.createdAt,
+        updatedAt: value.updatedAt,
+      );
 }

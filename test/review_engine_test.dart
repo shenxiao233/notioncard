@@ -13,6 +13,7 @@ void main() {
     question: 'Question',
     options: const {'A': 'Answer'},
     answer: const ['A'],
+    content: '',
     noteContent: '',
     explanation: '',
     tags: const [],

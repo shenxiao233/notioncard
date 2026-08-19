@@ -244,6 +244,7 @@ class _DeckDetailsState extends ConsumerState<_DeckDetails> {
             deckId: package.deckId,
             deckTitle: package.title,
             deckVersion: package.version,
+            restoreDeleted: true,
           );
       ref.invalidate(cardsProvider);
       ref.invalidate(pendingSyncProvider);

@@ -12,7 +12,9 @@ import '../../core/widgets/resource_action_dialogs.dart';
 import '../../core/widgets/swipe_action_tile.dart';
 
 class LibraryPage extends ConsumerStatefulWidget {
-  const LibraryPage({super.key});
+  const LibraryPage({this.initialFolder, super.key});
+
+  final String? initialFolder;
 
   @override
   ConsumerState<LibraryPage> createState() => _LibraryPageState();
@@ -21,6 +23,7 @@ class LibraryPage extends ConsumerStatefulWidget {
 class _LibraryPageState extends ConsumerState<LibraryPage> {
   final _searchController = TextEditingController();
   String _query = '';
+  late final String _folderFilter = widget.initialFolder?.trim() ?? '';
 
   @override
   void dispose() {
@@ -42,12 +45,17 @@ class _LibraryPageState extends ConsumerState<LibraryPage> {
           error: (error, _) => _LibraryError(onRetry: _refreshDocuments),
           data: (values) {
             final query = _query.trim().toLowerCase();
+            final folder = _folderFilter.trim();
             final filtered =
                 values.where((document) {
-                  return query.isEmpty ||
+                  final matchesQuery =
+                      query.isEmpty ||
                       document.title.toLowerCase().contains(query) ||
                       document.body.toLowerCase().contains(query) ||
                       document.folder.toLowerCase().contains(query);
+                  final matchesFolder =
+                      folder.isEmpty || document.folder.trim() == folder;
+                  return matchesQuery && matchesFolder;
                 }).toList()..sort(
                   (left, right) => right.updatedAt.compareTo(left.updatedAt),
                 );
@@ -73,10 +81,14 @@ class _LibraryPageState extends ConsumerState<LibraryPage> {
                   ),
                   const SizedBox(height: 16),
                   AppVisualSectionTitle(
-                    title: '全部文档',
-                    subtitle: _query.isEmpty
-                        ? '${values.length} 篇文档'
-                        : '匹配 ${filtered.length} 篇文档',
+                    title: folder.isEmpty ? '全部文档' : folder,
+                    subtitle: folder.isEmpty
+                        ? (_query.isEmpty
+                              ? '${values.length} 篇文档'
+                              : '匹配 ${filtered.length} 篇文档')
+                        : (_query.isEmpty
+                              ? '${filtered.length} 篇文档'
+                              : '匹配 ${filtered.length} 篇文档'),
                   ),
                   const SizedBox(height: 10),
                   if (filtered.isEmpty)

@@ -9,6 +9,7 @@ import '../../app/app_providers.dart';
 import '../../core/models/card_model.dart';
 import '../../core/widgets/empty_state.dart';
 import '../../core/widgets/markdown_content.dart';
+import '../cards/card_favorites.dart';
 import 'review_queue.dart';
 import 'review_settings.dart';
 import 'review_session.dart';
@@ -40,11 +41,11 @@ class _StudyPageState extends ConsumerState<StudyPage> {
   Future<void> _sessionWrite = Future<void>.value();
   bool _sessionInitialized = false;
   bool _sessionAutonomousLearning = false;
-  bool _favorite = false;
 
   @override
   Widget build(BuildContext context) {
     final cards = ref.watch(cardsProvider);
+    final favoriteCardIds = ref.watch(cardFavoritesProvider);
     final settings = ref.watch(reviewSettingsProvider);
     final reviewEvents = ref.watch(reviewEventsProvider);
 
@@ -116,8 +117,8 @@ class _StudyPageState extends ConsumerState<StudyPage> {
                 rating: _rating,
                 saving: _saving,
                 previews: previews,
-                favorite: _favorite,
-                onToggleFavorite: () => setState(() => _favorite = !_favorite),
+                favorite: favoriteCardIds.contains(card.id),
+                onToggleFavorite: () => unawaited(_toggleFavorite(card.id)),
                 onOpenAnswerCard: () => _showAnswerCard(queue),
                 onSelect: (key) => _select(card, key),
                 onSubmit: () => _submitAnswer(card),
@@ -356,7 +357,6 @@ class _StudyPageState extends ConsumerState<StudyPage> {
         _selected.clear();
         _answered = false;
         _rating = null;
-        _favorite = false;
       });
       await _persistSession();
     } catch (_) {
@@ -450,6 +450,14 @@ class _StudyPageState extends ConsumerState<StudyPage> {
         ),
       ),
     );
+  }
+
+  Future<void> _toggleFavorite(String cardId) async {
+    await ref.read(cardFavoritesProvider.notifier).toggle(cardId);
+    ref.invalidate(pendingSyncProvider);
+    ref
+        .read(syncControllerProvider.notifier)
+        .scheduleSync(reason: 'card-favorite');
   }
 
   String _nextDueLabel(CardModel card, ReviewRating rating) {
@@ -714,7 +722,20 @@ class _CardBody extends StatelessWidget {
         ),
         const Divider(height: 20, color: Color(0xffedf0ee)),
         if (card.type == CardType.note) ...[
-          _ReviewContent(data: card.noteContent),
+          _ReviewContent(data: card.content),
+          if (card.noteContent.trim().isNotEmpty) ...[
+            const SizedBox(height: 16),
+            const Text(
+              '笔记',
+              style: TextStyle(
+                color: _studyMuted,
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            const SizedBox(height: 5),
+            _ReviewContent(data: card.noteContent),
+          ],
         ] else ...[
           const Text(
             '请选择答案',
@@ -750,7 +771,7 @@ class _CardBody extends StatelessWidget {
         ],
         const SizedBox(height: 12),
         Text(
-          '来源：${card.folder.isEmpty ? '未分类' : card.folder}',
+          '来源：${card.source.trim().isEmpty ? (card.folder.trim().isEmpty ? '未分类' : card.folder) : card.source}',
           style: const TextStyle(color: Color(0xffa4aca7), fontSize: 13),
         ),
       ],

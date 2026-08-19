@@ -6,13 +6,17 @@ import 'package:go_router/go_router.dart';
 
 import '../features/auth/login_page.dart';
 import '../features/auth/register_page.dart';
+import '../core/models/card_model.dart';
 import '../features/cards/cards_page.dart';
 import '../features/cards/card_detail_page.dart';
+import '../features/cards/card_editor_page.dart';
+import '../features/cards/card_import_page.dart';
 import '../features/cards/cards_market_page.dart';
 import '../features/library/library_page.dart';
 import '../features/library/document_detail_page.dart';
 import '../features/market/deck_detail_page.dart';
 import '../features/market/market_page.dart';
+import '../features/editor/editor_page.dart';
 import '../features/review/review_home_page.dart';
 import '../features/review/review_history_page.dart';
 import '../features/review/study_page.dart';
@@ -46,6 +50,38 @@ final routerProvider = Provider<GoRouter>((ref) {
         builder: (context, state, child) => AppShell(child: child),
         routes: [
           GoRoute(
+            path: '/edit',
+            builder: (context, state) => const EditorPage(),
+          ),
+          GoRoute(
+            // Keep the card editor as a sibling route instead of nesting it
+            // below `/edit`. This makes it a real standalone page: opening
+            // it from the card list can return directly to that list rather
+            // than revealing the old content-type chooser underneath it.
+            path: '/edit/card',
+            builder: (context, state) {
+              final extra = state.extra;
+              return CardEditorPage(
+                initialCard: extra is CardModel ? extra : null,
+                initialFolder: extra is String ? extra : null,
+              );
+            },
+          ),
+          GoRoute(
+            path: '/edit/document',
+            builder: (context, state) => const DocumentFolderPickerPage(),
+            routes: [
+              GoRoute(
+                path: 'editor',
+                builder: (context, state) => DocumentEditorPage(
+                  selectedFolder: state.extra is String
+                      ? state.extra! as String
+                      : '',
+                ),
+              ),
+            ],
+          ),
+          GoRoute(
             path: '/review',
             builder: (context, state) => const ReviewHomePage(),
             routes: [
@@ -63,7 +99,8 @@ final routerProvider = Provider<GoRouter>((ref) {
           ),
           GoRoute(
             path: '/library',
-            builder: (context, state) => const LibraryPage(),
+            builder: (context, state) =>
+                LibraryPage(initialFolder: state.uri.queryParameters['folder']),
             routes: [
               GoRoute(
                 path: 'document/:documentId',
@@ -85,6 +122,14 @@ final routerProvider = Provider<GoRouter>((ref) {
             path: '/cards',
             builder: (context, state) => const CardsPage(),
             routes: [
+              GoRoute(
+                path: 'import',
+                builder: (context, state) => CardImportPage(
+                  initialFolder: state.extra is String
+                      ? state.extra! as String
+                      : null,
+                ),
+              ),
               GoRoute(
                 path: 'deck',
                 builder: (context, state) {

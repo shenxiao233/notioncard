@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -18,6 +20,15 @@ class _LoginPageState extends ConsumerState<LoginPage> {
   final _passwordFocusNode = FocusNode();
   String? _error;
   bool _obscurePassword = true;
+
+  @override
+  void initState() {
+    super.initState();
+    // Keep a login-page fallback for routes that are opened without a normal
+    // app-start frame. ApiClient single-flights it with the app-level warmup,
+    // so this never creates a duplicate health request.
+    unawaited(ref.read(apiClientProvider).warmup());
+  }
 
   @override
   void dispose() {

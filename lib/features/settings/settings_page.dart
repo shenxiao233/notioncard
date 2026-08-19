@@ -94,7 +94,10 @@ class SettingsPage extends ConsumerWidget {
     final cards = ref.watch(cardsProvider).valueOrNull?.length ?? 0;
     final documents = ref.watch(documentsProvider).valueOrNull?.length ?? 0;
     final sync = ref.watch(syncControllerProvider);
-    final pending = ref.watch(pendingSyncProvider).valueOrNull ?? sync.pending;
+    // SyncController refreshes the durable queue count after every mutation.
+    // The old FutureProvider value could remain at 1 after the queue had
+    // already been drained, creating a phantom item that could not retry.
+    final pending = sync.pending;
     final reviewSettings = ref.watch(reviewSettingsProvider);
 
     return Scaffold(

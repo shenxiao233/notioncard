@@ -4,6 +4,7 @@ import 'package:drift/native.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:kncard_app/core/database/app_database.dart';
 import 'package:kncard_app/core/models/card_model.dart';
+import 'package:kncard_app/core/models/collection_model.dart';
 import 'package:kncard_app/core/repositories/content_repository.dart';
 
 void main() {
@@ -17,8 +18,64 @@ void main() {
     await database.close();
   });
 
+  test('createDocument stores the document and queues one mutation', () async {
+    final document = await ContentRepository(database).createDocument(
+      accountId: 'account-1',
+      title: '学习笔记',
+      body: '# 间隔重复',
+      folder: '学习',
+    );
+
+    expect(document.id, startsWith('local-document-'));
+    expect((await database.loadDocuments('account-1')).single.title, '学习笔记');
+    final queued = (await database.loadPendingSync('account-1')).single;
+    expect(queued.objectType, 'DOCUMENT');
+    expect(queued.objectId, document.id);
+    expect(jsonDecode(queued.payload)['body'], '# 间隔重复');
+  });
+
   test(
-    'relearnDeck resets cards, clears events, and queues sync updates',
+    'creates empty collections and renames document categories safely',
+    () async {
+      final repository = ContentRepository(database);
+      final category = await repository.createCollection(
+        accountId: 'account-1',
+        type: CollectionType.documentCategory,
+        name: '项目笔记',
+      );
+
+      expect((await database.loadCollections('account-1')).single.name, '项目笔记');
+
+      final document = await repository.createDocument(
+        accountId: 'account-1',
+        title: '第一次记录',
+        body: '正文',
+        folder: category.name,
+      );
+      final renamed = await repository.renameCollection(
+        collection: category,
+        name: '工作笔记',
+      );
+
+      expect(renamed.name, '工作笔记');
+      expect((await database.loadDocuments('account-1')).single.folder, '工作笔记');
+
+      await repository.archiveCollection(renamed);
+      expect(
+        (await database.loadCollections('account-1')).single.archived,
+        isTrue,
+      );
+      final pending = await database.loadPendingSync('account-1');
+      final collectionMutation = pending.firstWhere(
+        (item) => item.objectId == category.id,
+      );
+      expect(jsonDecode(collectionMutation.payload)['archived'], isTrue);
+      expect(document.id, startsWith('local-document-'));
+    },
+  );
+
+  test(
+    'relearnDeck resets cards, clears events, and queues one deck mutation',
     () async {
       final now = DateTime(2026, 8, 1);
       final card = CardModel(
@@ -29,7 +86,8 @@ void main() {
         question: 'Question',
         options: const {},
         answer: const [],
-        noteContent: 'Note',
+        content: 'Note',
+        noteContent: '',
         explanation: '',
         tags: const [],
         dueAt: now.add(const Duration(days: 3)),
@@ -78,15 +136,16 @@ void main() {
       expect(reset.mastery, isEmpty);
       expect(reset.dueAt.isAfter(now), isTrue);
       expect(events, isEmpty);
+      expect(sync.objectType, 'DECK');
       expect(sync.objectVersion, 1);
-      expect(payload['reviews'], 0);
-      expect((payload['fsrs'] as Map)['state'], 'newCard');
-      expect(payload['progressReset'], true);
+      expect(payload['syncAction'], 'DECK_RELEARN');
+      expect(payload['cardCount'], 1);
+      expect(payload['resetEpoch'], 1);
     },
   );
 
   test(
-    'relearnDeck coalesces a large deck without duplicating queue rows',
+    'relearnDeck removes card snapshots and queues one deck mutation',
     () async {
       final now = DateTime(2026, 8, 1);
       final cards = List.generate(
@@ -118,11 +177,12 @@ void main() {
 
       expect(count, 1210);
       final pending = await database.loadPendingSync('account-1');
-      expect(pending, hasLength(1210));
-      expect(
-        pending.every((item) => item.id.startsWith('card-upsert-')),
-        isTrue,
-      );
+      expect(pending, hasLength(1));
+      expect(pending.single.objectType, 'DECK');
+      final payload =
+          jsonDecode(pending.single.payload) as Map<String, dynamic>;
+      expect(payload['syncAction'], 'DECK_RELEARN');
+      expect(payload['cardCount'], 1210);
     },
   );
 
@@ -294,34 +354,31 @@ void main() {
     },
   );
 
-  test(
-    'concurrent queue replacements leave one snapshot per object',
-    () async {
-      final now = DateTime(2026, 8, 1);
-      await Future.wait(
-        List.generate(
-          20,
-          (index) => database.enqueueSync(
-            SyncQueueItemModel(
-              id: 'settings-mutation-$index-00000000',
-              accountId: 'account-1',
-              objectType: 'SETTINGS',
-              objectId: 'review',
-              operation: SyncOperation.upsert,
-              payload: '{"value":$index}',
-              status: SyncItemStatus.pending,
-              attempts: 0,
-              lastError: null,
-              createdAt: now.add(Duration(microseconds: index)),
-              updatedAt: now.add(Duration(microseconds: index)),
-            ),
+  test('concurrent queue replacements leave one snapshot per object', () async {
+    final now = DateTime(2026, 8, 1);
+    await Future.wait(
+      List.generate(
+        20,
+        (index) => database.enqueueSync(
+          SyncQueueItemModel(
+            id: 'settings-mutation-$index-00000000',
+            accountId: 'account-1',
+            objectType: 'SETTINGS',
+            objectId: 'review',
+            operation: SyncOperation.upsert,
+            payload: '{"value":$index}',
+            status: SyncItemStatus.pending,
+            attempts: 0,
+            lastError: null,
+            createdAt: now.add(Duration(microseconds: index)),
+            updatedAt: now.add(Duration(microseconds: index)),
           ),
         ),
-      );
+      ),
+    );
 
-      expect(await database.loadPendingSync('account-1'), hasLength(1));
-    },
-  );
+    expect(await database.loadPendingSync('account-1'), hasLength(1));
+  });
 
   test('keeps relearn intent when a card is reviewed before upload', () async {
     final now = DateTime(2026, 8, 1);
@@ -339,11 +396,65 @@ void main() {
       event: _reviewEvent(card, now.add(const Duration(minutes: 1)), 'event-1'),
     );
 
-    final pending = (await database.loadPendingSync(card.accountId)).single;
-    final payload = jsonDecode(pending.payload) as Map<String, dynamic>;
+    final pending = await database.loadPendingSync(card.accountId);
+    final cardMutation = pending.singleWhere(
+      (item) => item.objectType == 'CARD',
+    );
+    final deckMutation = pending.singleWhere(
+      (item) => item.objectType == 'DECK',
+    );
+    final payload = jsonDecode(cardMutation.payload) as Map<String, dynamic>;
+    final deckPayload =
+        jsonDecode(deckMutation.payload) as Map<String, dynamic>;
+    expect(pending, hasLength(2));
     expect(payload['reviews'], 1);
-    expect(payload['progressReset'], true);
+    expect(payload['deckEpoch'], 1);
+    expect(payload['syncMode'], 'progress');
+    expect(payload.containsKey('progressReset'), isFalse);
+    expect(deckPayload['syncAction'], 'DECK_RELEARN');
+    expect(deckPayload['resetEpoch'], 1);
   });
+
+  test('review status maps legacy values to the two visible states', () {
+    final card = _buildReviewCard(DateTime(2026, 8, 1));
+
+    expect(card.copyWith(mastery: masteredCardMastery).isMastered, isTrue);
+    expect(card.copyWith(mastery: 'familiar').isMastered, isTrue);
+    expect(card.copyWith(mastery: 'tooEasy').isMastered, isTrue);
+    expect(card.copyWith(mastery: 'forgot').isMastered, isFalse);
+    expect(card.copyWith(mastery: 'fuzzy').isMastered, isFalse);
+    expect(card.copyWith(mastery: '').reviewStatusLabel, '复习中');
+  });
+
+  test(
+    'manual mastery toggles due time and coalesces its card mutation',
+    () async {
+      final card = _buildReviewCard(DateTime(2026, 8, 1));
+      final repository = ContentRepository(database);
+
+      final mastered = await repository.setCardReviewStatus(
+        card: card,
+        mastered: true,
+      );
+      expect(mastered.mastery, masteredCardMastery);
+      expect(mastered.dueAt, DateTime(9999, 12, 31, 23, 59, 59));
+      expect(mastered.isDue, isFalse);
+
+      final reviewing = await repository.setCardReviewStatus(
+        card: mastered,
+        mastered: false,
+      );
+      expect(reviewing.mastery, reviewingCardMastery);
+      expect(reviewing.isDue, isTrue);
+
+      final pending = await database.loadPendingSync(card.accountId);
+      expect(pending, hasLength(1));
+      final payload =
+          jsonDecode(pending.single.payload) as Map<String, dynamic>;
+      expect(payload['mastery'], reviewingCardMastery);
+      expect(payload['dueAt'], reviewing.dueAt.toIso8601String());
+    },
+  );
 
   test('createCard saves the card and queues a card upsert', () async {
     final now = DateTime(2026, 8, 1);
@@ -355,7 +466,8 @@ void main() {
       question: 'What is spaced repetition?',
       options: const {},
       answer: const [],
-      noteContent: 'Review information at increasing intervals.',
+      content: 'Review information at increasing intervals.',
+      noteContent: '',
       explanation: '',
       tags: const ['study'],
       dueAt: now,
@@ -387,6 +499,8 @@ void main() {
     expect(queued.operation, SyncOperation.upsert);
     expect(payload['question'], card.question);
     expect(payload['folder'], card.folder);
+    expect(payload['content'], card.content);
+    expect(payload['noteContent'], card.noteContent);
   });
 
   test(
@@ -421,6 +535,56 @@ void main() {
   );
 
   test(
+    'market re-download replaces a deck tombstone with an explicit restore',
+    () async {
+      final repository = ContentRepository(database);
+      final first = _buildImportCard('market-deck-restore-1', 'first');
+      final second = _buildImportCard('market-deck-restore-2', 'second');
+
+      await repository.importCards(
+        'account-1',
+        [first, second],
+        deckId: 'market-deck-restore',
+        deckTitle: first.folder,
+        deckVersion: 1,
+        restoreDeleted: true,
+      );
+      await repository.deleteDeck(accountId: 'account-1', folder: first.folder);
+      expect(
+        (await database.loadPendingSync('account-1')).single.operation,
+        SyncOperation.delete,
+      );
+
+      await repository.importCards(
+        'account-1',
+        [first, second],
+        deckId: 'market-deck-restore',
+        deckTitle: first.folder,
+        deckVersion: 1,
+        restoreDeleted: true,
+      );
+
+      final pending = await database.loadPendingSync('account-1');
+      expect(pending, hasLength(3));
+      expect(pending.first.objectType, 'DECK');
+      expect(pending.first.operation, SyncOperation.upsert);
+      final deckPayload =
+          jsonDecode(pending.first.payload) as Map<String, dynamic>;
+      expect(deckPayload['restoreDeleted'], true);
+      expect(deckPayload['resetEpoch'], 0);
+      expect(
+        pending.skip(1).every((item) {
+          final payload = jsonDecode(item.payload) as Map<String, dynamic>;
+          return item.objectType == 'CARD' &&
+              item.operation == SyncOperation.upsert &&
+              payload['restoreDeleted'] == true;
+        }),
+        isTrue,
+      );
+    },
+  );
+
+  test(
     'updateCard replaces editable fields and queues a card upsert',
     () async {
       final now = DateTime(2026, 8, 1);
@@ -432,6 +596,7 @@ void main() {
         question: 'Original question',
         options: const {},
         answer: const [],
+        content: 'Original content',
         noteContent: 'Original note',
         explanation: '',
         tags: const [],
@@ -464,9 +629,11 @@ void main() {
       final payload = jsonDecode(queued.payload) as Map<String, dynamic>;
 
       expect(saved.question, 'Updated question');
+      expect(saved.content, 'Original content');
       expect(saved.noteContent, 'Updated note');
       expect(saved.reviews, card.reviews);
       expect(payload['question'], 'Updated question');
+      expect(payload['content'], 'Original content');
       expect(payload['noteContent'], 'Updated note');
       expect(queued.objectType, 'CARD');
       expect(queued.objectId, card.id);
@@ -518,6 +685,7 @@ CardModel _buildImportCard(String id, String question) {
     question: question,
     options: const {},
     answer: const ['答案'],
+    content: '',
     noteContent: '',
     explanation: '',
     tags: const [],
@@ -548,6 +716,7 @@ CardModel _buildLargeDeckCard(int index, DateTime now) {
     question: 'Question $index',
     options: const {},
     answer: const [],
+    content: '',
     noteContent: '',
     explanation: '',
     tags: const [],
@@ -576,7 +745,8 @@ CardModel _buildReviewCard(DateTime now) => CardModel(
   question: 'Question',
   options: const {},
   answer: const [],
-  noteContent: 'Note',
+  content: 'Note',
+  noteContent: '',
   explanation: '',
   tags: const [],
   dueAt: now,

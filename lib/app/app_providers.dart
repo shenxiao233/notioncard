@@ -8,6 +8,8 @@ import 'package:connectivity_plus/connectivity_plus.dart';
 import '../core/database/app_database.dart';
 import '../core/models/account_model.dart';
 import '../core/models/card_model.dart';
+import '../core/models/card_highlight_model.dart';
+import '../core/models/collection_model.dart';
 import '../core/models/document_model.dart';
 import '../core/network/api_client.dart';
 import '../core/network/api_config.dart';
@@ -88,6 +90,17 @@ final contentRepositoryProvider = Provider<ContentRepository>((ref) {
     preferences: ref.watch(sharedPreferencesProvider),
   );
 });
+
+final cardHighlightsProvider =
+    FutureProvider.family<List<CardHighlightModel>, String>((ref, cardId) async {
+      final accountId = ref.watch(currentAccountProvider)?.id;
+      if (accountId == null || cardId.trim().isEmpty) {
+        return const <CardHighlightModel>[];
+      }
+      return ref
+          .watch(contentRepositoryProvider)
+          .loadCardHighlights(accountId, cardId);
+    });
 
 final reviewEngineProvider = Provider<ReviewEngine>((ref) => ReviewEngine());
 
@@ -213,8 +226,11 @@ authControllerProvider =
       return AuthController(
         ref.watch(authRepositoryProvider),
         ref.watch(sessionEventsProvider),
-        onLogin: () =>
-            ref.read(syncControllerProvider.notifier).sync(reason: 'login'),
+        // Keep authentication and first-paint independent from synchronization.
+        // The sync controller starts after a short idle delay in the background.
+        onLogin: () => ref
+            .read(syncControllerProvider.notifier)
+            .scheduleSync(reason: 'login'),
         onSessionInvalidated: () =>
             ref.read(syncControllerProvider.notifier).resetForAccountChange(),
       );
@@ -239,9 +255,11 @@ syncControllerProvider = StateNotifierProvider<SyncController, SyncUiState>((
     ref.watch(syncCoordinatorProvider),
     Connectivity(),
     () => ref.read(currentAccountProvider),
+    onPendingChanged: () => ref.invalidate(pendingSyncProvider),
     onDataChanged: () {
       ref.invalidate(cardsProvider);
       ref.invalidate(documentsProvider);
+      ref.invalidate(collectionsProvider);
       ref.invalidate(reviewEventsProvider);
       ref.read(remoteSettingsRevisionProvider.notifier).state++;
     },
@@ -272,6 +290,12 @@ final documentsProvider = FutureProvider<List<DocumentModel>>((ref) async {
   final account = ref.watch(currentAccountProvider);
   if (account == null) return const [];
   return ref.watch(contentRepositoryProvider).documents(account.id);
+});
+
+final collectionsProvider = FutureProvider<List<CollectionModel>>((ref) async {
+  final account = ref.watch(currentAccountProvider);
+  if (account == null) return const [];
+  return ref.watch(contentRepositoryProvider).collections(account.id);
 });
 
 final reviewEventsProvider = FutureProvider((ref) async {

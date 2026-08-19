@@ -66,6 +66,8 @@ void main() {
     expect(package.cards[0].accountId, 'account-a');
     expect(package.cards[0].folder, '测试牌组');
     expect(package.cards[0].answer, ['答案一']);
+    expect(package.cards[0].content, '补充说明');
+    expect(package.cards[0].noteContent, isEmpty);
     expect(package.cards[0].tags, ['基础']);
     expect(package.cards[0].fsrs.state.name, 'newCard');
     expect(package.cards[0].sortOrder, 1);

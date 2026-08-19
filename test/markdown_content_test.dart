@@ -24,6 +24,83 @@ void main() {
     expect(htmlToMarkdown('<p>正文</p><p></p>'), '正文');
   });
 
+  test('extracts image links from card-style plain URLs and Markdown', () {
+    const plain = 'https://fb.example/api/tarzan/images/card.png?token=123';
+    const markdown = '![鍥剧墖](https://example.com/diagram.webp)';
+
+    expect(extractImageLinkUrls(plain), [plain]);
+    expect(extractImageLinkUrls(markdown), [
+      'https://example.com/diagram.webp',
+    ]);
+    expect(extractImageLinkUrls('https://example.com/article/123'), isEmpty);
+  });
+
+  test('uses the compatible static CDN for exported fenbike image URLs', () {
+    const source =
+        'https://fb.fenbike.cn/api/tarzan/images/19dd20818593290.png?width=700';
+
+    expect(
+      compatibleImageUri(Uri.parse(source)).toString(),
+      'https://fb.fbstatic.cn/api/tarzan/images/19dd20818593290.png?width=700',
+    );
+    expect(
+      compatibleImageUri(Uri.parse('https://example.com/image.png')).toString(),
+      'https://example.com/image.png',
+    );
+    expect(
+      isFormulaImageUri(
+        Uri.parse(
+          'https://fb.fbstatic.cn/api/planet/accessories/formulas?latex=abc',
+        ),
+      ),
+      isTrue,
+    );
+    expect(
+      isFormulaImageUri(
+        Uri.parse(
+          'https://fb.fbstatic.cn/api/tarzan/images/diagram.png?width=700',
+        ),
+      ),
+      isFalse,
+    );
+  });
+
+  testWidgets('keeps formula images at intrinsic size', (tester) async {
+    await tester.pumpWidget(
+      const MaterialApp(
+        home: Scaffold(
+          body: MarkdownContent(
+            data:
+                '![formula](https://fb.fenbike.cn/api/planet/accessories/formulas?latex=abc)',
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    final image = tester.widget<Image>(find.byType(Image).first);
+    expect(image.width, isNull);
+    expect(image.height, isNull);
+    final formulaAlign = tester.widget<Align>(find.byType(Align).first);
+    expect(formulaAlign.widthFactor, 1);
+    expect(formulaAlign.heightFactor, 1);
+  });
+
+  testWidgets('renders a compact preview for a bare image URL', (tester) async {
+    await tester.pumpWidget(
+      const MaterialApp(
+        home: Scaffold(
+          body: ImageLinkPreview(data: 'https://invalid.example/image.png'),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    expect(find.byType(ImageLinkPreview), findsOneWidget);
+    final image = tester.widget<Image>(find.byType(Image));
+    expect(image.fit, BoxFit.contain);
+  });
+
   testWidgets('renders markdown, latex, and image fallback content', (
     tester,
   ) async {
@@ -48,6 +125,31 @@ $$
     await tester.pump();
     expect(find.text('公式'), findsOneWidget);
     expect(find.byType(MarkdownContent), findsOneWidget);
+  });
+
+  testWidgets('opens a zoomable viewer when a detail image is tapped', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      const MaterialApp(
+        home: Scaffold(
+          body: MarkdownContent(
+            data: '![鍥剧墖](https://invalid.example/image.png)',
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    await tester.tap(find.byType(Image));
+    await tester.pump(const Duration(milliseconds: 250));
+
+    expect(find.byType(InteractiveViewer), findsOneWidget);
+    expect(find.byIcon(Icons.close_rounded), findsOneWidget);
+
+    await tester.tap(find.byIcon(Icons.close_rounded));
+    await tester.pumpAndSettle();
+    expect(find.byType(InteractiveViewer), findsNothing);
   });
 
   testWidgets('renders custom note entries and bare image urls', (

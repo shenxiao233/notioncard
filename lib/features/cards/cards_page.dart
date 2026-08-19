@@ -7,10 +7,17 @@ import '../../core/models/card_model.dart';
 import '../../core/widgets/app_layout.dart';
 import '../../core/widgets/app_visuals.dart';
 import '../../core/widgets/empty_state.dart';
+import '../../core/widgets/markdown_content.dart';
 import '../../core/widgets/resource_action_dialogs.dart';
 import '../../core/widgets/swipe_action_tile.dart';
+import 'card_favorites.dart';
+import '../review/review_queue.dart';
 
-enum _CardSort { due, recent, reviews, created }
+enum _CardSort { original, due, recent, reviews, created }
+
+enum _CardSortDirection { ascending, descending }
+
+enum _CardReviewFilter { mastered, reviewing }
 
 class CardsPage extends ConsumerWidget {
   const CardsPage({super.key});
@@ -41,10 +48,27 @@ class CardsPage extends ConsumerWidget {
               children: [
                 _LibrarySummary(cards: values),
                 const SizedBox(height: 24),
-                AppVisualSectionTitle(
-                  title: '我的牌组',
-                  subtitle:
-                      '${CardsPage._groupCards(values).length} 个牌组 · ${values.length} 张卡片',
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Expanded(
+                      child: AppVisualSectionTitle(
+                        title: '我的牌组',
+                        subtitle: '管理牌组与批量导入卡片',
+                      ),
+                    ),
+                    OutlinedButton.icon(
+                      onPressed: () => context.push('/cards/import'),
+                      icon: const Icon(Icons.file_upload_outlined, size: 17),
+                      label: const Text('导入'),
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: AppVisualColors.darkGreen,
+                        padding: const EdgeInsets.symmetric(horizontal: 10),
+                        minimumSize: const Size(0, 36),
+                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      ),
+                    ),
+                  ],
                 ),
                 const SizedBox(height: 10),
                 if (values.isEmpty)
@@ -189,8 +213,9 @@ class _DeckCardsPageState extends ConsumerState<DeckCardsPage> {
   final _searchController = TextEditingController();
   String _query = '';
   CardType? _type;
-  bool? _dueOnly;
-  _CardSort _sort = _CardSort.due;
+  _CardReviewFilter? _reviewFilter;
+  _CardSort _sort = _CardSort.original;
+  _CardSortDirection? _sortDirection;
 
   @override
   void dispose() {
@@ -201,6 +226,7 @@ class _DeckCardsPageState extends ConsumerState<DeckCardsPage> {
   @override
   Widget build(BuildContext context) {
     final cards = ref.watch(cardsProvider);
+    final favoriteCardIds = ref.watch(cardFavoritesProvider);
     return Scaffold(
       backgroundColor: AppVisualColors.background,
       body: SafeArea(
@@ -229,8 +255,9 @@ class _DeckCardsPageState extends ConsumerState<DeckCardsPage> {
                     query: _query,
                     hasFilters:
                         _type != null ||
-                        _dueOnly != null ||
-                        _sort != _CardSort.due,
+                        _reviewFilter != null ||
+                        _sort != _CardSort.original ||
+                        _sortDirection != null,
                     onChanged: (value) => setState(() => _query = value),
                     onClear: () {
                       _searchController.clear();
@@ -255,7 +282,8 @@ class _DeckCardsPageState extends ConsumerState<DeckCardsPage> {
                     ...filtered.map(
                       (card) => _CardListItem(
                         card: card,
-                        onEdit: () => _showEditCardSheet(card),
+                        favorite: favoriteCardIds.contains(card.id),
+                        onEdit: () => _openExistingCardEditor(card),
                         onDelete: () => _confirmDeleteCard(card),
                       ),
                     ),
@@ -267,7 +295,7 @@ class _DeckCardsPageState extends ConsumerState<DeckCardsPage> {
       ),
       floatingActionButton: FloatingActionButton.small(
         tooltip: '新增卡片',
-        onPressed: _showAddCardSheet,
+        onPressed: _openCardEditor,
         backgroundColor: AppVisualColors.green,
         foregroundColor: Colors.white,
         elevation: 5,
@@ -284,36 +312,55 @@ class _DeckCardsPageState extends ConsumerState<DeckCardsPage> {
   bool get _hasFilters =>
       _query.trim().isNotEmpty ||
       _type != null ||
-      _dueOnly != null ||
-      _sort != _CardSort.due;
+      _reviewFilter != null ||
+      _sort != _CardSort.original ||
+      _sortDirection != null;
 
   List<CardModel> _filtered(List<CardModel> values) {
     final query = _query.trim().toLowerCase();
     final result = values.where((card) {
       return (_type == null || card.type == _type) &&
-          (_dueOnly == null || card.isDue == _dueOnly) &&
+          (_reviewFilter == null ||
+              (_reviewFilter == _CardReviewFilter.mastered
+                  ? card.isMastered
+                  : !card.isMastered)) &&
           (query.isEmpty ||
               card.question.toLowerCase().contains(query) ||
               card.tags.any((tag) => tag.toLowerCase().contains(query)));
     }).toList();
-    result.sort(
-      (left, right) => switch (_sort) {
-        _CardSort.due => left.dueAt.compareTo(right.dueAt),
-        _CardSort.recent => right.updatedAt.compareTo(left.updatedAt),
-        _CardSort.reviews => right.reviews.compareTo(left.reviews),
-        _CardSort.created => right.createdAt.compareTo(left.createdAt),
-      },
-    );
+    result.sort(_compareCards);
     return result;
   }
+
+  int _compareCards(CardModel left, CardModel right) {
+    final base = switch (_sort) {
+      _CardSort.original => compareCardOrder(left, right),
+      _CardSort.due => left.dueAt.compareTo(right.dueAt),
+      _CardSort.recent => left.updatedAt.compareTo(right.updatedAt),
+      _CardSort.reviews => left.reviews.compareTo(right.reviews),
+      _CardSort.created => left.createdAt.compareTo(right.createdAt),
+    };
+    final direction = _sortDirection ?? _defaultSortDirection(_sort);
+    final comparison = direction == _CardSortDirection.ascending ? base : -base;
+    return comparison != 0 ? comparison : left.id.compareTo(right.id);
+  }
+
+  _CardSortDirection _defaultSortDirection(_CardSort sort) => switch (sort) {
+    _CardSort.original => _CardSortDirection.ascending,
+    _CardSort.due => _CardSortDirection.ascending,
+    _CardSort.recent => _CardSortDirection.descending,
+    _CardSort.reviews => _CardSortDirection.descending,
+    _CardSort.created => _CardSortDirection.descending,
+  };
 
   void _clearFilters() {
     _searchController.clear();
     setState(() {
       _query = '';
       _type = null;
-      _dueOnly = null;
-      _sort = _CardSort.due;
+      _reviewFilter = null;
+      _sort = _CardSort.original;
+      _sortDirection = null;
     });
   }
 
@@ -327,8 +374,9 @@ class _DeckCardsPageState extends ConsumerState<DeckCardsPage> {
 
   Future<void> _showFilterSheet() async {
     var selectedType = _type;
-    var selectedDue = _dueOnly;
+    var selectedReviewFilter = _reviewFilter;
     var selectedSort = _sort;
+    var selectedDirection = _sortDirection;
     await showModalBottomSheet<void>(
       context: context,
       builder: (sheetContext) => StatefulBuilder(
@@ -354,14 +402,22 @@ class _DeckCardsPageState extends ConsumerState<DeckCardsPage> {
               ),
               const SizedBox(height: 12),
               DropdownButtonFormField<bool?>(
-                initialValue: selectedDue,
+                initialValue: selectedReviewFilter == null
+                    ? null
+                    : selectedReviewFilter == _CardReviewFilter.mastered,
                 decoration: const InputDecoration(labelText: '复习状态'),
                 items: const [
                   DropdownMenuItem(value: null, child: Text('全部状态')),
-                  DropdownMenuItem(value: true, child: Text('仅到期')),
-                  DropdownMenuItem(value: false, child: Text('未到期')),
+                  DropdownMenuItem(value: true, child: Text('已掌握')),
+                  DropdownMenuItem(value: false, child: Text('复习中')),
                 ],
-                onChanged: (value) => setSheetState(() => selectedDue = value),
+                onChanged: (value) => setSheetState(
+                  () => selectedReviewFilter = value == null
+                      ? null
+                      : value
+                      ? _CardReviewFilter.mastered
+                      : _CardReviewFilter.reviewing,
+                ),
               ),
               const SizedBox(height: 12),
               DropdownButtonFormField<_CardSort>(
@@ -379,6 +435,25 @@ class _DeckCardsPageState extends ConsumerState<DeckCardsPage> {
                   if (value != null) setSheetState(() => selectedSort = value);
                 },
               ),
+              const SizedBox(height: 12),
+              DropdownButtonFormField<_CardSortDirection?>(
+                initialValue: selectedDirection,
+                decoration: const InputDecoration(labelText: '排序方向'),
+                items: [
+                  const DropdownMenuItem<_CardSortDirection?>(
+                    value: null,
+                    child: Text('默认顺序'),
+                  ),
+                  ..._CardSortDirection.values.map(
+                    (direction) => DropdownMenuItem<_CardSortDirection?>(
+                      value: direction,
+                      child: Text(_sortDirectionLabel(direction)),
+                    ),
+                  ),
+                ],
+                onChanged: (value) =>
+                    setSheetState(() => selectedDirection = value),
+              ),
               const SizedBox(height: 18),
               SizedBox(
                 width: double.infinity,
@@ -386,8 +461,9 @@ class _DeckCardsPageState extends ConsumerState<DeckCardsPage> {
                   onPressed: () {
                     setState(() {
                       _type = selectedType;
-                      _dueOnly = selectedDue;
+                      _reviewFilter = selectedReviewFilter;
                       _sort = selectedSort;
+                      _sortDirection = selectedDirection;
                     });
                     Navigator.of(sheetContext).pop();
                   },
@@ -401,109 +477,29 @@ class _DeckCardsPageState extends ConsumerState<DeckCardsPage> {
     );
   }
 
-  Future<void> _showAddCardSheet() async {
-    final draft = await showModalBottomSheet<_NewCardDraft>(
-      context: context,
-      isScrollControlled: true,
-      builder: (context) => const _AddCardSheet(),
-    );
-    if (draft == null || !mounted) return;
-
-    final account = ref.read(currentAccountProvider);
-    if (account == null) return;
-    final now = DateTime.now();
-    final card = CardModel(
-      id: 'local-card-${now.microsecondsSinceEpoch}',
-      accountId: account.id,
-      type: CardType.note,
-      folder: widget.folder == '未分类' ? '' : widget.folder,
-      question: draft.question,
-      options: const {},
-      answer: const [],
-      noteContent: draft.noteContent,
-      explanation: '',
-      tags: const [],
-      dueAt: now,
-      createdAt: now,
-      updatedAt: now,
-      reviews: 0,
-      mastery: '',
-      suspended: false,
-      fsrs: FsrsSnapshot(
-        state: FsrsState.newCard,
-        dueAt: now,
-        stability: 0,
-        difficulty: 5,
-        reps: 0,
-        lapses: 0,
-      ),
-    );
-
-    try {
-      await ref.read(contentRepositoryProvider).createCard(card);
-      ref.invalidate(cardsProvider);
-      ref.invalidate(pendingSyncProvider);
-      ref
-          .read(syncControllerProvider.notifier)
-          .scheduleSync(reason: 'card-create');
-      if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(const SnackBar(content: Text('卡片已添加，等待同步。')));
-      }
-    } catch (error) {
-      if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('添加卡片失败：$error')));
-      }
-    }
+  Future<void> _openCardEditor() async {
+    await context.push('/edit/card', extra: widget.folder);
+    if (mounted) ref.invalidate(cardsProvider);
   }
 
-  Future<void> _showEditCardSheet(CardModel card) async {
-    final draft = await showModalBottomSheet<_NewCardDraft>(
-      context: context,
-      isScrollControlled: true,
-      builder: (context) => _AddCardSheet(
-        initialQuestion: card.question,
-        initialNoteContent: card.noteContent,
-        isEditing: true,
-      ),
-    );
-    if (draft == null || !mounted) return;
-
-    try {
-      final updated = card.copyWith(
-        question: draft.question,
-        noteContent: draft.noteContent,
-        updatedAt: DateTime.now(),
-      );
-      await ref.read(contentRepositoryProvider).updateCard(updated);
-      ref.invalidate(cardsProvider);
-      ref.invalidate(pendingSyncProvider);
-      ref
-          .read(syncControllerProvider.notifier)
-          .scheduleSync(reason: 'card-update');
-      if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(const SnackBar(content: Text('卡片已更新，等待同步。')));
-      }
-    } catch (error) {
-      if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('更新卡片失败：$error')));
-      }
-    }
+  Future<void> _openExistingCardEditor(CardModel card) async {
+    await context.push('/edit/card', extra: card);
+    if (mounted) ref.invalidate(cardsProvider);
   }
 
   String _sortLabel(_CardSort sort) => switch (sort) {
+    _CardSort.original => '按原始顺序',
     _CardSort.due => '按下次复习时间',
     _CardSort.recent => '按最近更新',
     _CardSort.reviews => '按复习次数',
     _CardSort.created => '按创建时间',
   };
+
+  String _sortDirectionLabel(_CardSortDirection direction) =>
+      switch (direction) {
+        _CardSortDirection.ascending => '升序',
+        _CardSortDirection.descending => '降序',
+      };
 
   Future<void> _confirmDeleteCard(CardModel card) async {
     final confirmed = await _confirm(
@@ -903,11 +899,13 @@ class _SearchBar extends StatelessWidget {
 class _CardListItem extends StatefulWidget {
   const _CardListItem({
     required this.card,
+    required this.favorite,
     required this.onEdit,
     required this.onDelete,
   });
 
   final CardModel card;
+  final bool favorite;
   final VoidCallback onEdit;
   final VoidCallback onDelete;
 
@@ -1039,11 +1037,12 @@ class _CardListItemState extends State<_CardListItem> {
                                 mainAxisAlignment: MainAxisAlignment.center,
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
-                                  Text(
-                                    widget.card.question,
+                                  ImageLinkPreview(
+                                    data: widget.card.question,
                                     maxLines: 2,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: const TextStyle(
+                                    thumbnailWidth: 116,
+                                    thumbnailHeight: 72,
+                                    textStyle: const TextStyle(
                                       color: AppVisualColors.ink,
                                       fontSize: 14,
                                       fontWeight: FontWeight.w700,
@@ -1051,15 +1050,18 @@ class _CardListItemState extends State<_CardListItem> {
                                     ),
                                   ),
                                   const SizedBox(height: 5),
-                                  Text(
-                                    '${widget.card.isDue ? '待复习' : '未到期'} · ${widget.card.reviews} 次复习',
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: const TextStyle(
-                                      color: AppVisualColors.muted,
-                                      fontSize: 12,
-                                      height: 1.2,
-                                    ),
+                                  Row(
+                                    children: [
+                                      _CardStateBadge(card: widget.card),
+                                      if (widget.favorite) ...[
+                                        const SizedBox(width: 6),
+                                        const Icon(
+                                          Icons.star_rounded,
+                                          size: 15,
+                                          color: Color(0xffe1a633),
+                                        ),
+                                      ],
+                                    ],
                                   ),
                                 ],
                               ),
@@ -1078,6 +1080,44 @@ class _CardListItemState extends State<_CardListItem> {
               ),
             ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+class _CardStateBadge extends StatelessWidget {
+  const _CardStateBadge({required this.card});
+
+  final CardModel card;
+
+  @override
+  Widget build(BuildContext context) {
+    final mastered = card.isMastered;
+    final background = mastered
+        ? const Color(0xffedf8ee)
+        : const Color(0xfff6f2ea);
+    final foreground = mastered
+        ? AppVisualColors.darkGreen
+        : const Color(0xff9b5d25);
+    final label = card.reviewCountLabel.isEmpty
+        ? card.reviewStatusLabel
+        : '${card.reviewStatusLabel} · ${card.reviewCountLabel}';
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: background,
+        borderRadius: BorderRadius.circular(999),
+      ),
+      child: Text(
+        label,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: TextStyle(
+          color: foreground,
+          fontSize: 12,
+          height: 1.1,
+          fontWeight: FontWeight.w600,
         ),
       ),
     );
@@ -1125,146 +1165,4 @@ class _SwipeAction extends StatelessWidget {
       ),
     ),
   );
-}
-
-class _NewCardDraft {
-  const _NewCardDraft({required this.question, required this.noteContent});
-
-  final String question;
-  final String noteContent;
-}
-
-class _AddCardSheet extends StatefulWidget {
-  const _AddCardSheet({
-    this.initialQuestion = '',
-    this.initialNoteContent = '',
-    this.isEditing = false,
-  });
-
-  final String initialQuestion;
-  final String initialNoteContent;
-  final bool isEditing;
-
-  @override
-  State<_AddCardSheet> createState() => _AddCardSheetState();
-}
-
-class _AddCardSheetState extends State<_AddCardSheet> {
-  final _questionController = TextEditingController();
-  final _noteController = TextEditingController();
-  String? _error;
-
-  @override
-  void initState() {
-    super.initState();
-    _questionController.text = widget.initialQuestion;
-    _noteController.text = widget.initialNoteContent;
-  }
-
-  @override
-  void dispose() {
-    _questionController.dispose();
-    _noteController.dispose();
-    super.dispose();
-  }
-
-  void _submit() {
-    final question = _questionController.text.trim();
-    if (question.isEmpty) {
-      setState(() => _error = '请输入题干或词条');
-      return;
-    }
-    Navigator.of(context).pop(
-      _NewCardDraft(
-        question: question,
-        noteContent: _noteController.text.trim(),
-      ),
-    );
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return SafeArea(
-      child: Padding(
-        padding: EdgeInsets.fromLTRB(
-          20,
-          8,
-          20,
-          20 + MediaQuery.viewInsetsOf(context).bottom,
-        ),
-        child: SingleChildScrollView(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                widget.isEditing ? '修改卡片' : '新增卡片',
-                style: const TextStyle(
-                  color: AppVisualColors.ink,
-                  fontSize: 20,
-                  fontWeight: FontWeight.w700,
-                ),
-              ),
-              const SizedBox(height: 5),
-              Text(
-                widget.isEditing
-                    ? '修改后会保留复习记录，并在下次同步时上传。'
-                    : '保存后会加入当前牌组，并在下次同步时上传。',
-                style: TextStyle(
-                  color: AppVisualColors.muted,
-                  fontSize: 13,
-                  height: 1.35,
-                ),
-              ),
-              const SizedBox(height: 18),
-              TextField(
-                controller: _questionController,
-                autofocus: true,
-                maxLines: 2,
-                textInputAction: TextInputAction.next,
-                decoration: const InputDecoration(
-                  labelText: '题干或词条',
-                  hintText: '例如：什么是间隔重复？',
-                ),
-                onChanged: (_) {
-                  if (_error != null) setState(() => _error = null);
-                },
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: _noteController,
-                maxLines: 4,
-                textInputAction: TextInputAction.newline,
-                decoration: const InputDecoration(
-                  labelText: '内容（可选）',
-                  hintText: '补充答案、解释或记忆提示',
-                ),
-              ),
-              if (_error != null) ...[
-                const SizedBox(height: 8),
-                Text(
-                  _error!,
-                  style: const TextStyle(
-                    color: Color(0xffb3261e),
-                    fontSize: 12,
-                  ),
-                ),
-              ],
-              const SizedBox(height: 18),
-              SizedBox(
-                width: double.infinity,
-                child: FilledButton.icon(
-                  onPressed: _submit,
-                  icon: Icon(
-                    widget.isEditing ? Icons.check_rounded : Icons.add_rounded,
-                    size: 19,
-                  ),
-                  label: Text(widget.isEditing ? '保存修改' : '添加卡片'),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
 }

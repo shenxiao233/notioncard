@@ -4,14 +4,19 @@ Map<String, dynamic> cardSyncPayload(
   CardModel card, {
   bool progressReset = false,
   bool progressOnly = false,
+  bool restoreDeleted = false,
+  String? deckId,
+  int? deckEpoch,
 }) {
   final payload = <String, dynamic>{
     'id': card.id,
     'type': card.type.name,
     'folder': card.folder,
+    'source': card.source,
     'question': card.question,
     'options': card.options,
     'answer': card.answer,
+    'content': card.content,
     'noteContent': card.noteContent,
     'explanation': card.explanation,
     'tags': card.tags,
@@ -38,6 +43,16 @@ Map<String, dynamic> cardSyncPayload(
     payload['order'] = card.sortOrder;
   }
   if (progressReset) payload['progressReset'] = true;
+  // A market re-download is an explicit user action that is allowed to
+  // resurrect a previously deleted deck/card tombstone. This is deliberately
+  // opt-in; ordinary offline mutations must remain unable to resurrect data.
+  if (restoreDeleted) payload['restoreDeleted'] = true;
+  if (deckId != null && deckId.trim().isNotEmpty) {
+    payload['deckId'] = deckId.trim();
+  }
+  if (deckEpoch != null && deckEpoch >= 0) {
+    payload['deckEpoch'] = deckEpoch;
+  }
   if (progressOnly) payload['syncMode'] = 'progress';
   return payload;
 }

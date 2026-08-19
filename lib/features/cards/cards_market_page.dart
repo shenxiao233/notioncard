@@ -5,6 +5,7 @@ import 'package:intl/intl.dart';
 
 import '../../app/app_providers.dart';
 import '../../core/models/card_model.dart';
+import '../../core/models/collection_model.dart';
 import '../../core/models/document_model.dart';
 import '../../core/widgets/app_layout.dart';
 import '../../core/widgets/app_visuals.dart';
@@ -27,13 +28,11 @@ class KnowledgeBasePage extends ConsumerStatefulWidget {
 }
 
 class _KnowledgeBasePageState extends ConsumerState<KnowledgeBasePage> {
-  late KnowledgeBaseSection _section = widget.initialSection;
-
   @override
   Widget build(BuildContext context) {
     final documents = ref.watch(documentsProvider);
     final cards = ref.watch(cardsProvider);
-    final marketDecks = ref.watch(marketSearchProvider('')).valueOrNull;
+    final collections = ref.watch(collectionsProvider);
 
     return Scaffold(
       backgroundColor: AppVisualColors.background,
@@ -49,34 +48,52 @@ class _KnowledgeBasePageState extends ConsumerState<KnowledgeBasePage> {
               child: CircularProgressIndicator(color: AppVisualColors.green),
             ),
             error: (error, _) => _KnowledgeBaseError(onRetry: _refresh),
-            data: (cardValues) => RefreshIndicator(
-              onRefresh: _refresh,
-              child: ListView(
-                physics: const AlwaysScrollableScrollPhysics(),
-                padding: const EdgeInsets.fromLTRB(
-                  16,
-                  10,
-                  16,
-                  AppLayoutMetrics.bottomNavigationContentPadding + 32,
+            data: (cardValues) => collections.when(
+              loading: () => const Center(
+                child: CircularProgressIndicator(color: AppVisualColors.green),
+              ),
+              error: (error, _) => _KnowledgeBaseError(onRetry: _refresh),
+              data: (collectionValues) => RefreshIndicator(
+                onRefresh: _refresh,
+                child: ListView(
+                  physics: const AlwaysScrollableScrollPhysics(),
+                  padding: const EdgeInsets.fromLTRB(
+                    16,
+                    12,
+                    16,
+                    AppLayoutMetrics.bottomNavigationContentPadding + 36,
+                  ),
+                  children: [
+                    _ResourceHeader(
+                      onSearch: () => _openSearch(
+                        context,
+                        documents: documentValues,
+                        cards: cardValues,
+                        collections: collectionValues,
+                      ),
+                    ),
+                    _DocumentsSection(
+                      documents: documentValues,
+                      categories: collectionValues
+                          .where(
+                            (collection) =>
+                                collection.type ==
+                                    CollectionType.documentCategory &&
+                                !collection.archived,
+                          )
+                          .toList(),
+                    ),
+                    const SizedBox(height: 28),
+                    _CardsSection(
+                      decks: _SectionContent._groupCards(
+                        cardValues,
+                        collectionValues,
+                      ),
+                    ),
+                    const SizedBox(height: 28),
+                    const _MarketPromoCard(),
+                  ],
                 ),
-                children: [
-                  _ShortcutRow(
-                    documentCount: documentValues.length,
-                    cardCount: cardValues.length,
-                    marketCount: marketDecks?.length,
-                    onDocuments: () => _select(KnowledgeBaseSection.documents),
-                    onCards: () => _select(KnowledgeBaseSection.cards),
-                    onMarket: () => context.push('/market'),
-                  ),
-                  const SizedBox(height: 24),
-                  _SectionSwitcher(selected: _section, onChanged: _select),
-                  const SizedBox(height: 18),
-                  _SectionContent(
-                    section: _section,
-                    documents: documentValues,
-                    cards: cardValues,
-                  ),
-                ],
               ),
             ),
           ),
@@ -85,9 +102,20 @@ class _KnowledgeBasePageState extends ConsumerState<KnowledgeBasePage> {
     );
   }
 
-  void _select(KnowledgeBaseSection section) {
-    if (_section == section) return;
-    setState(() => _section = section);
+  void _openSearch(
+    BuildContext context, {
+    required List<DocumentModel> documents,
+    required List<CardModel> cards,
+    required List<CollectionModel> collections,
+  }) {
+    showSearch<void>(
+      context: context,
+      delegate: _ResourceSearchDelegate(
+        documents: documents,
+        cards: cards,
+        collections: collections,
+      ),
+    );
   }
 
   Future<void> _refresh() async {
@@ -96,232 +124,13 @@ class _KnowledgeBasePageState extends ConsumerState<KnowledgeBasePage> {
         .sync(reason: 'knowledge-base-refresh');
     ref.invalidate(documentsProvider);
     ref.invalidate(cardsProvider);
+    ref.invalidate(collectionsProvider);
     ref.invalidate(marketSearchProvider(''));
     await Future.wait([
       ref.read(documentsProvider.future),
       ref.read(cardsProvider.future),
+      ref.read(collectionsProvider.future),
     ]);
-  }
-}
-
-class _ShortcutRow extends StatelessWidget {
-  const _ShortcutRow({
-    required this.documentCount,
-    required this.cardCount,
-    required this.marketCount,
-    required this.onDocuments,
-    required this.onCards,
-    required this.onMarket,
-  });
-
-  final int documentCount;
-  final int cardCount;
-  final int? marketCount;
-  final VoidCallback onDocuments;
-  final VoidCallback onCards;
-  final VoidCallback onMarket;
-
-  @override
-  Widget build(BuildContext context) => Row(
-    children: [
-      Expanded(
-        child: _ShortcutCard(
-          title: '全部文档',
-          detail: '$documentCount 篇文档',
-          icon: Icons.folder_rounded,
-          foreground: const Color(0xff159c3a),
-          background: const Color(0xfff0faef),
-          onTap: onDocuments,
-        ),
-      ),
-      const SizedBox(width: 9),
-      Expanded(
-        child: _ShortcutCard(
-          title: '我的卡牌',
-          detail: '$cardCount 张卡牌',
-          icon: Icons.style_rounded,
-          foreground: const Color(0xff4778e8),
-          background: const Color(0xfff0f4ff),
-          onTap: onCards,
-        ),
-      ),
-      const SizedBox(width: 9),
-      Expanded(
-        child: _ShortcutCard(
-          title: '资源市场',
-          detail: marketCount == null ? '浏览新牌组' : '$marketCount 个牌组',
-          icon: Icons.shopping_bag_rounded,
-          foreground: const Color(0xffe9950b),
-          background: const Color(0xfffff8eb),
-          onTap: onMarket,
-        ),
-      ),
-    ],
-  );
-}
-
-class _ShortcutCard extends StatelessWidget {
-  const _ShortcutCard({
-    required this.title,
-    required this.detail,
-    required this.icon,
-    required this.foreground,
-    required this.background,
-    required this.onTap,
-  });
-
-  final String title;
-  final String detail;
-  final IconData icon;
-  final Color foreground;
-  final Color background;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) => Material(
-    color: background,
-    borderRadius: BorderRadius.circular(22),
-    child: InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(22),
-      child: SizedBox(
-        height: 126,
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(14, 16, 12, 12),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Icon(icon, color: foreground, size: 30),
-              const Spacer(),
-              Text(
-                title,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(
-                  color: AppVisualColors.ink,
-                  fontSize: 15,
-                  fontWeight: FontWeight.w800,
-                ),
-              ),
-              const SizedBox(height: 6),
-              Row(
-                children: [
-                  Expanded(
-                    child: Text(
-                      detail,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        color: AppVisualColors.muted,
-                        fontSize: 11,
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 4),
-                  Icon(
-                    Icons.chevron_right_rounded,
-                    color: foreground,
-                    size: 20,
-                  ),
-                ],
-              ),
-            ],
-          ),
-        ),
-      ),
-    ),
-  );
-}
-
-class _SectionSwitcher extends StatelessWidget {
-  const _SectionSwitcher({required this.selected, required this.onChanged});
-
-  final KnowledgeBaseSection selected;
-  final ValueChanged<KnowledgeBaseSection> onChanged;
-
-  @override
-  Widget build(BuildContext context) => Container(
-    height: 62,
-    padding: const EdgeInsets.all(5),
-    decoration: BoxDecoration(
-      color: Colors.white,
-      borderRadius: BorderRadius.circular(22),
-      boxShadow: appCardShadow,
-    ),
-    child: Row(
-      children: [
-        _SectionButton(
-          label: '我的文档',
-          section: KnowledgeBaseSection.documents,
-          selected: selected,
-          onChanged: onChanged,
-        ),
-        _SectionButton(
-          label: '我的卡牌',
-          section: KnowledgeBaseSection.cards,
-          selected: selected,
-          onChanged: onChanged,
-        ),
-      ],
-    ),
-  );
-}
-
-class _SectionButton extends StatelessWidget {
-  const _SectionButton({
-    required this.label,
-    required this.section,
-    required this.selected,
-    required this.onChanged,
-  });
-
-  final String label;
-  final KnowledgeBaseSection section;
-  final KnowledgeBaseSection selected;
-  final ValueChanged<KnowledgeBaseSection> onChanged;
-
-  @override
-  Widget build(BuildContext context) {
-    final active = section == selected;
-    return Expanded(
-      child: Semantics(
-        button: true,
-        selected: active,
-        label: label,
-        child: InkWell(
-          onTap: () => onChanged(section),
-          borderRadius: BorderRadius.circular(18),
-          child: SizedBox(
-            height: 52,
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Text(
-                  label,
-                  style: TextStyle(
-                    color: active
-                        ? AppVisualColors.darkGreen
-                        : AppVisualColors.muted,
-                    fontSize: 14,
-                    fontWeight: active ? FontWeight.w800 : FontWeight.w600,
-                  ),
-                ),
-                const SizedBox(height: 7),
-                AnimatedContainer(
-                  duration: const Duration(milliseconds: 160),
-                  width: active ? 30 : 0,
-                  height: 3,
-                  decoration: BoxDecoration(
-                    color: AppVisualColors.green,
-                    borderRadius: BorderRadius.circular(3),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
   }
 }
 
@@ -330,96 +139,149 @@ class _SectionContent extends StatelessWidget {
     required this.section,
     required this.documents,
     required this.cards,
+    required this.collections,
   });
 
   final KnowledgeBaseSection section;
   final List<DocumentModel> documents;
   final List<CardModel> cards;
+  final List<CollectionModel> collections;
 
   @override
   Widget build(BuildContext context) {
-    final decks = _groupCards(cards);
+    final decks = _groupCards(cards, collections);
     return switch (section) {
-      KnowledgeBaseSection.documents => _DocumentsSection(documents: documents),
+      KnowledgeBaseSection.documents => _DocumentsSection(
+        documents: documents,
+        categories: collections
+            .where(
+              (collection) =>
+                  collection.type == CollectionType.documentCategory &&
+                  !collection.archived,
+            )
+            .toList(),
+      ),
       KnowledgeBaseSection.cards => _CardsSection(decks: decks),
     };
   }
 
-  static List<_DeckSummary> _groupCards(List<CardModel> cards) {
+  static List<_DeckSummary> _groupCards(
+    List<CardModel> cards,
+    List<CollectionModel> collections,
+  ) {
     final groups = <String, List<CardModel>>{};
     for (final card in cards) {
       final folder = card.folder.trim();
       groups.putIfAbsent(folder, () => []).add(card);
     }
+    for (final collection in collections.where(
+      (value) => value.type == CollectionType.deck && !value.archived,
+    )) {
+      groups.putIfAbsent(collection.name.trim(), () => []);
+    }
     final summaries =
         groups.entries
-            .map((entry) => _DeckSummary(folder: entry.key, cards: entry.value))
+            .map(
+              (entry) => _DeckSummary(
+                folder: entry.key,
+                cards: entry.value,
+                collection: _collectionForFolder(collections, entry.key),
+              ),
+            )
             .toList()
           ..sort((left, right) => right.updatedAt.compareTo(left.updatedAt));
     return summaries;
   }
+
+  static CollectionModel? _collectionForFolder(
+    List<CollectionModel> collections,
+    String folder,
+  ) {
+    for (final collection in collections) {
+      if (collection.type == CollectionType.deck &&
+          collection.name.trim() == folder) {
+        return collection;
+      }
+    }
+    return null;
+  }
 }
 
 class _DocumentsSection extends ConsumerWidget {
-  const _DocumentsSection({required this.documents});
+  const _DocumentsSection({required this.documents, required this.categories});
 
   final List<DocumentModel> documents;
+  final List<CollectionModel> categories;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final entries = [...documents]
+    final categoryEntries = [...categories]
       ..sort((left, right) => right.updatedAt.compareTo(left.updatedAt));
-    return _LimitedResourceSection(
-      title: '我的文档',
-      subtitle: '${documents.length} 篇文档',
-      entries: entries
-          .map(
-            (document) => _ResourceEntry(
-              title: document.title,
-              subtitle: _folderLabel(document.folder),
-              updatedAt: document.updatedAt,
-              icon: Icons.description_rounded,
-              iconColor: AppVisualColors.green,
-              iconBackground: AppVisualColors.softGreen,
-              onTap: () => context.push('/library/document/${document.id}'),
-              onRename: () => _renameDocument(context, ref, document),
-              onDelete: () => _deleteDocument(context, ref, document),
-            ),
+    final visibleEntries = categoryEntries.take(2).toList();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _ResourceSectionHeader(
+          title: '我的文档',
+          subtitle: '${categories.length} 个分类 · ${documents.length} 篇文章',
+          onViewAll: () => context.push('/library'),
+        ),
+        const SizedBox(height: 12),
+        if (visibleEntries.isEmpty)
+          const _ShelfEmptyState(
+            title: '还没有文档',
+            message: '创建一个文档类别，开始整理你的学习资料。',
           )
-          .toList(),
-      emptyState: const EmptyState(
-        title: '还没有同步文档',
-        message: '完成首次同步后，文档会显示在这里。',
-        icon: Icons.description_outlined,
-      ),
+        else
+          _ResourceList(
+            entries: [
+              for (final category in visibleEntries)
+                _ResourceListEntry(
+                  title: category.name,
+                  subtitle:
+                      '${documents.where((document) => document.folder == category.name).length} 篇文章',
+                  updatedAt: category.updatedAt,
+                  onTap: () => context.push(
+                    Uri(
+                      path: '/library',
+                      queryParameters: {'folder': category.name},
+                    ).toString(),
+                  ),
+                  onRename: () => _renameCategory(context, ref, category),
+                  onArchive: () => _archiveCategory(context, ref, category),
+                ),
+            ],
+          ),
+      ],
     );
   }
 
-  Future<void> _renameDocument(
+  Future<void> _renameCategory(
     BuildContext context,
     WidgetRef ref,
-    DocumentModel document,
+    CollectionModel category,
   ) async {
-    final title = await showRenameResourceDialog(
+    final name = await showRenameResourceDialog(
       context,
-      title: '重命名文档',
-      initialValue: document.title,
-      hintText: '输入文档名称',
+      title: '重命名文档类别',
+      initialValue: category.name,
+      hintText: '输入类别名称',
     );
-    if (title == null || !context.mounted) return;
+    if (name == null || !context.mounted) return;
     try {
       await ref
           .read(contentRepositoryProvider)
-          .renameDocument(document: document, title: title);
+          .renameCollection(collection: category, name: name);
+      ref.invalidate(collectionsProvider);
       ref.invalidate(documentsProvider);
       ref.invalidate(pendingSyncProvider);
       ref
           .read(syncControllerProvider.notifier)
-          .scheduleSync(reason: 'document-rename');
+          .scheduleSync(reason: 'document-category-rename');
       if (context.mounted) {
         ScaffoldMessenger.of(
           context,
-        ).showSnackBar(const SnackBar(content: Text('文档已重命名，等待同步。')));
+        ).showSnackBar(const SnackBar(content: Text('文档类别已重命名，等待同步。')));
       }
     } catch (error) {
       if (context.mounted) {
@@ -430,39 +292,34 @@ class _DocumentsSection extends ConsumerWidget {
     }
   }
 
-  Future<void> _deleteDocument(
+  Future<void> _archiveCategory(
     BuildContext context,
     WidgetRef ref,
-    DocumentModel document,
+    CollectionModel category,
   ) async {
     final confirmed = await showDeleteResourceDialog(
       context,
-      title: '删除这篇文档？',
-      message: '删除后会从本地移除，并在下次同步时从其他设备删除。',
+      title: '归档这个文档类别？',
+      message: '文档不会被删除，归档后仍可通过同步数据恢复。',
     );
     if (!confirmed || !context.mounted) return;
     try {
-      await ref
-          .read(contentRepositoryProvider)
-          .deleteDocument(
-            accountId: document.accountId,
-            documentId: document.id,
-          );
-      ref.invalidate(documentsProvider);
+      await ref.read(contentRepositoryProvider).archiveCollection(category);
+      ref.invalidate(collectionsProvider);
       ref.invalidate(pendingSyncProvider);
       ref
           .read(syncControllerProvider.notifier)
-          .scheduleSync(reason: 'document-delete');
+          .scheduleSync(reason: 'document-category-archive');
       if (context.mounted) {
         ScaffoldMessenger.of(
           context,
-        ).showSnackBar(const SnackBar(content: Text('文档已删除，等待同步。')));
+        ).showSnackBar(const SnackBar(content: Text('文档类别已归档。')));
       }
     } catch (error) {
       if (context.mounted) {
         ScaffoldMessenger.of(
           context,
-        ).showSnackBar(SnackBar(content: Text('删除失败：$error')));
+        ).showSnackBar(SnackBar(content: Text('归档失败：$error')));
       }
     }
   }
@@ -474,29 +331,33 @@ class _CardsSection extends ConsumerWidget {
   final List<_DeckSummary> decks;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) => _LimitedResourceSection(
-    title: '我的卡牌',
-    subtitle: '${decks.length} 个牌组 · ${_cardCount(decks)} 张卡牌',
-    entries: decks
-        .map(
-          (deck) => _ResourceEntry(
-            title: deck.name,
-            subtitle: '${deck.cards.length} 张卡牌 · ${deck.dueCount} 张待复习',
-            updatedAt: deck.updatedAt,
-            icon: Icons.style_rounded,
-            iconColor: const Color(0xff4778e8),
-            iconBackground: const Color(0xfff0f4ff),
-            onTap: () => context.push('/cards/deck', extra: deck.routeFolder),
-            onRename: () => _renameDeck(context, ref, deck),
-            onDelete: () => _deleteDeck(context, ref, deck),
-          ),
-        )
-        .toList(),
-    emptyState: const EmptyState(
-      title: '还没有本地卡牌',
-      message: '同步内容后，牌组会显示在这里。',
-      icon: Icons.style_outlined,
-    ),
+  Widget build(BuildContext context, WidgetRef ref) => Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      _ResourceSectionHeader(
+        title: '我的卡牌',
+        subtitle: '${_cardCount(decks)} 张卡牌 · ${decks.length} 个牌组',
+        onViewAll: () => context.push('/cards'),
+      ),
+      const SizedBox(height: 12),
+      if (decks.isEmpty)
+        const _ShelfEmptyState(title: '还没有牌组', message: '创建一个牌组，开始整理你的记忆卡片。')
+      else
+        _ResourceList(
+          entries: [
+            for (final deck in decks.take(2))
+              _ResourceListEntry(
+                title: deck.name,
+                subtitle: '${deck.cards.length} 张卡牌',
+                updatedAt: deck.updatedAt,
+                onTap: () =>
+                    context.push('/cards/deck', extra: deck.routeFolder),
+                onRename: () => _renameDeck(context, ref, deck),
+                onArchive: () => _deleteDeck(context, ref, deck),
+              ),
+          ],
+        ),
+    ],
   );
 
   Future<void> _renameDeck(
@@ -512,14 +373,22 @@ class _CardsSection extends ConsumerWidget {
     );
     if (name == null || !context.mounted) return;
     try {
-      final count = await ref
-          .read(contentRepositoryProvider)
-          .renameDeck(
-            accountId: deck.cards.first.accountId,
-            folder: deck.routeFolder,
-            name: name,
-          );
+      final count = deck.cards.length;
+      if (deck.collection == null) {
+        await ref
+            .read(contentRepositoryProvider)
+            .renameDeck(
+              accountId: deck.accountId,
+              folder: deck.routeFolder,
+              name: name,
+            );
+      } else {
+        await ref
+            .read(contentRepositoryProvider)
+            .renameCollection(collection: deck.collection!, name: name);
+      }
       ref.invalidate(cardsProvider);
+      ref.invalidate(collectionsProvider);
       ref.invalidate(pendingSyncProvider);
       ref
           .read(syncControllerProvider.notifier)
@@ -545,26 +414,26 @@ class _CardsSection extends ConsumerWidget {
   ) async {
     final confirmed = await showDeleteResourceDialog(
       context,
-      title: '删除这个牌组？',
-      message: '牌组中的 ${deck.cards.length} 张卡牌会从本地移除，并在下次同步时从其他设备删除。',
+      title: '归档这个牌组？',
+      message: '牌组中的卡牌不会被删除，归档后仍可通过同步数据恢复。',
     );
     if (!confirmed || !context.mounted) return;
     try {
-      final count = await ref
-          .read(contentRepositoryProvider)
-          .deleteDeck(
-            accountId: deck.cards.first.accountId,
-            folder: deck.routeFolder,
-          );
+      if (deck.collection != null) {
+        await ref
+            .read(contentRepositoryProvider)
+            .archiveCollection(deck.collection!);
+      }
       ref.invalidate(cardsProvider);
+      ref.invalidate(collectionsProvider);
       ref.invalidate(pendingSyncProvider);
       ref
           .read(syncControllerProvider.notifier)
-          .scheduleSync(reason: 'deck-delete');
+          .scheduleSync(reason: 'deck-archive');
       if (context.mounted) {
         ScaffoldMessenger.of(
           context,
-        ).showSnackBar(SnackBar(content: Text('已删除 $count 张卡牌，等待同步。')));
+        ).showSnackBar(const SnackBar(content: Text('牌组已归档，卡牌内容保留。')));
       }
     } catch (error) {
       if (context.mounted) {
@@ -580,125 +449,249 @@ class _CardsSection extends ConsumerWidget {
   }
 }
 
-class _LimitedResourceSection extends StatefulWidget {
-  const _LimitedResourceSection({
+class _ResourceHeader extends StatelessWidget {
+  const _ResourceHeader({required this.onSearch});
+
+  final VoidCallback onSearch;
+
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.fromLTRB(0, 2, 0, 28),
+    child: Semantics(
+      button: true,
+      label: '搜索资源',
+      child: Material(
+        color: const Color(0xfff7f7f6),
+        borderRadius: BorderRadius.circular(25),
+        child: InkWell(
+          onTap: onSearch,
+          borderRadius: BorderRadius.circular(25),
+          child: const SizedBox(
+            height: 50,
+            child: Row(
+              children: [
+                SizedBox(width: 17),
+                _SearchMark(color: Color(0xff7a7f7c)),
+                SizedBox(width: 13),
+                Text(
+                  '搜索文件夹 / 卡牌 / 文档',
+                  style: TextStyle(
+                    color: Color(0xff7c817e),
+                    fontSize: 14,
+                    fontWeight: FontWeight.w400,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    ),
+  );
+}
+
+class _SearchMark extends StatelessWidget {
+  const _SearchMark({required this.color});
+
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) =>
+      CustomPaint(size: const Size(24, 24), painter: _SearchMarkPainter(color));
+}
+
+class _SearchMarkPainter extends CustomPainter {
+  const _SearchMarkPainter(this.color);
+
+  final Color color;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()
+      ..color = color
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2.4
+      ..strokeCap = StrokeCap.round;
+    canvas.drawCircle(const Offset(9, 9), 6.5, paint);
+    canvas.drawLine(const Offset(14, 14), const Offset(20, 20), paint);
+  }
+
+  @override
+  bool shouldRepaint(covariant _SearchMarkPainter oldDelegate) =>
+      oldDelegate.color != color;
+}
+
+class _ResourceSectionHeader extends StatelessWidget {
+  const _ResourceSectionHeader({
     required this.title,
     required this.subtitle,
-    required this.entries,
-    required this.emptyState,
+    required this.onViewAll,
   });
-
-  static const maxInitialEntries = 5;
 
   final String title;
   final String subtitle;
-  final List<_ResourceEntry> entries;
-  final Widget emptyState;
+  final VoidCallback onViewAll;
 
   @override
-  State<_LimitedResourceSection> createState() =>
-      _LimitedResourceSectionState();
+  Widget build(BuildContext context) => Row(
+    crossAxisAlignment: CrossAxisAlignment.end,
+    children: [
+      Expanded(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              title,
+              style: const TextStyle(
+                color: AppVisualColors.ink,
+                fontSize: 22,
+                fontWeight: FontWeight.w700,
+                height: 1.15,
+              ),
+            ),
+            const SizedBox(height: 5),
+            Text(
+              subtitle,
+              style: const TextStyle(
+                color: AppVisualColors.muted,
+                fontSize: 13,
+                height: 1.2,
+              ),
+            ),
+          ],
+        ),
+      ),
+      TextButton(
+        onPressed: onViewAll,
+        style: TextButton.styleFrom(
+          foregroundColor: const Color(0xff347b46),
+          padding: const EdgeInsets.only(left: 4, right: 0),
+          minimumSize: Size.zero,
+          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+          textStyle: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700),
+        ),
+        child: const Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text('查看全部'),
+            SizedBox(width: 3),
+            Icon(Icons.chevron_right_rounded, size: 19),
+          ],
+        ),
+      ),
+    ],
+  );
 }
 
-class _LimitedResourceSectionState extends State<_LimitedResourceSection> {
-  bool _showAll = false;
-
-  @override
-  Widget build(BuildContext context) {
-    final hasMore =
-        widget.entries.length > _LimitedResourceSection.maxInitialEntries;
-    final visibleEntries =
-        widget.entries.length <= _LimitedResourceSection.maxInitialEntries ||
-            _showAll
-        ? widget.entries
-        : widget.entries
-              .take(_LimitedResourceSection.maxInitialEntries)
-              .toList();
-
-    return _SectionPanel(
-      title: widget.title,
-      subtitle: widget.subtitle,
-      trailing: hasMore
-          ? TextButton.icon(
-              onPressed: () => setState(() => _showAll = !_showAll),
-              icon: Icon(
-                _showAll
-                    ? Icons.keyboard_arrow_up_rounded
-                    : Icons.keyboard_arrow_down_rounded,
-                size: 18,
-              ),
-              label: Text(_showAll ? '收起' : '显示更多'),
-              style: TextButton.styleFrom(
-                foregroundColor: AppVisualColors.darkGreen,
-                padding: EdgeInsets.zero,
-                minimumSize: Size.zero,
-                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                visualDensity: VisualDensity.compact,
-              ),
-            )
-          : null,
-      child: widget.entries.isEmpty
-          ? widget.emptyState
-          : _ResourceList(entries: visibleEntries),
-    );
-  }
-}
-
-class _SectionPanel extends StatelessWidget {
-  const _SectionPanel({
-    required this.title,
-    required this.subtitle,
-    this.trailing,
-    required this.child,
-  });
+class _ShelfEmptyState extends StatelessWidget {
+  const _ShelfEmptyState({required this.title, required this.message});
 
   final String title;
-  final String? subtitle;
-  final Widget? trailing;
-  final Widget child;
+  final String message;
 
   @override
-  Widget build(BuildContext context) => Column(
-    crossAxisAlignment: CrossAxisAlignment.start,
-    children: [
-      Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Expanded(
-            child: AppVisualSectionTitle(title: title, subtitle: subtitle),
+  Widget build(BuildContext context) => Container(
+    width: double.infinity,
+    padding: const EdgeInsets.fromLTRB(16, 15, 16, 15),
+    decoration: BoxDecoration(
+      color: Colors.white,
+      borderRadius: BorderRadius.circular(20),
+      boxShadow: appCardShadow,
+    ),
+    child: Row(
+      children: [
+        Container(
+          width: 46,
+          height: 46,
+          decoration: BoxDecoration(
+            color: AppVisualColors.softGreen,
+            borderRadius: BorderRadius.circular(15),
           ),
-          if (trailing != null) ...[
-            const SizedBox(width: 8),
-            Padding(padding: const EdgeInsets.only(top: 1), child: trailing!),
-          ],
-        ],
-      ),
-      const SizedBox(height: 10),
-      child,
-    ],
+          child: const Text(
+            '+',
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              color: AppVisualColors.green,
+              fontSize: 27,
+              fontWeight: FontWeight.w300,
+              height: 1.55,
+            ),
+          ),
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                title,
+                style: const TextStyle(
+                  color: AppVisualColors.ink,
+                  fontSize: 14,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                message,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  color: AppVisualColors.muted,
+                  fontSize: 12,
+                  height: 1.25,
+                ),
+              ),
+            ],
+          ),
+        ),
+        const Text(
+          '+',
+          style: TextStyle(
+            color: AppVisualColors.muted,
+            fontSize: 22,
+            fontWeight: FontWeight.w300,
+          ),
+        ),
+      ],
+    ),
   );
 }
 
 class _ResourceList extends StatelessWidget {
   const _ResourceList({required this.entries});
 
-  final List<_ResourceEntry> entries;
+  final List<_ResourceListEntry> entries;
 
   @override
-  Widget build(BuildContext context) => Container(
+  Widget build(BuildContext context) => DecoratedBox(
     decoration: BoxDecoration(
       color: Colors.white,
       borderRadius: BorderRadius.circular(20),
-      boxShadow: appCardShadow,
-    ),
-    child: Column(
-      children: [
-        for (var index = 0; index < entries.length; index++) ...[
-          _ResourceRow(entry: entries[index]),
-          if (index < entries.length - 1)
-            const Divider(indent: 74, endIndent: 14, color: Color(0xffedf0ed)),
-        ],
+      boxShadow: const [
+        BoxShadow(
+          color: Color(0x0d000000),
+          blurRadius: 18,
+          offset: Offset(0, 7),
+        ),
       ],
+    ),
+    child: ClipRRect(
+      borderRadius: BorderRadius.circular(20),
+      child: Column(
+        children: [
+          for (var index = 0; index < entries.length; index++) ...[
+            _ResourceRow(entry: entries[index]),
+            if (index < entries.length - 1)
+              const Divider(
+                height: 1,
+                indent: 16,
+                endIndent: 16,
+                color: Color(0xffeeeae3),
+              ),
+          ],
+        ],
+      ),
     ),
   );
 }
@@ -706,29 +699,19 @@ class _ResourceList extends StatelessWidget {
 class _ResourceRow extends StatelessWidget {
   const _ResourceRow({required this.entry});
 
-  final _ResourceEntry entry;
+  final _ResourceListEntry entry;
 
   @override
   Widget build(BuildContext context) => SwipeActionTile(
     onTap: entry.onTap,
     onRename: entry.onRename,
-    onDelete: entry.onDelete,
+    onDelete: entry.onArchive,
     borderRadius: BorderRadius.zero,
     boxShadow: const [],
     child: Padding(
-      padding: const EdgeInsets.fromLTRB(14, 13, 12, 13),
+      padding: const EdgeInsets.fromLTRB(16, 14, 14, 14),
       child: Row(
         children: [
-          Container(
-            width: 46,
-            height: 46,
-            decoration: BoxDecoration(
-              color: entry.iconBackground,
-              borderRadius: BorderRadius.circular(15),
-            ),
-            child: Icon(entry.icon, color: entry.iconColor, size: 23),
-          ),
-          const SizedBox(width: 12),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -739,44 +722,34 @@ class _ResourceRow extends StatelessWidget {
                   overflow: TextOverflow.ellipsis,
                   style: const TextStyle(
                     color: AppVisualColors.ink,
-                    fontSize: 15,
+                    fontSize: 16,
                     fontWeight: FontWeight.w700,
-                    height: 1.25,
+                    height: 1.2,
                   ),
                 ),
-                const SizedBox(height: 5),
+                const SizedBox(height: 4),
                 Text(
                   entry.subtitle,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: const TextStyle(
                     color: AppVisualColors.muted,
-                    fontSize: 12,
-                    height: 1.2,
+                    fontSize: 13,
                   ),
                 ),
               ],
             ),
           ),
           const SizedBox(width: 8),
-          Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            crossAxisAlignment: CrossAxisAlignment.end,
-            children: [
-              Text(
-                DateFormat('MM-dd').format(entry.updatedAt.toLocal()),
-                style: const TextStyle(
-                  color: AppVisualColors.muted,
-                  fontSize: 12,
-                ),
-              ),
-              const SizedBox(height: 4),
-              const Icon(
-                Icons.chevron_right_rounded,
-                color: AppVisualColors.muted,
-                size: 19,
-              ),
-            ],
+          Text(
+            DateFormat('MM-dd').format(entry.updatedAt.toLocal()),
+            style: const TextStyle(color: AppVisualColors.muted, fontSize: 12),
+          ),
+          const SizedBox(width: 8),
+          const Icon(
+            Icons.more_horiz_rounded,
+            color: AppVisualColors.ink,
+            size: 21,
           ),
         ],
       ),
@@ -784,41 +757,475 @@ class _ResourceRow extends StatelessWidget {
   );
 }
 
-class _ResourceEntry {
-  const _ResourceEntry({
+class _ResourceListEntry {
+  const _ResourceListEntry({
     required this.title,
     required this.subtitle,
     required this.updatedAt,
-    required this.icon,
-    required this.iconColor,
-    required this.iconBackground,
     required this.onTap,
     required this.onRename,
-    required this.onDelete,
+    required this.onArchive,
   });
 
   final String title;
   final String subtitle;
   final DateTime updatedAt;
-  final IconData icon;
-  final Color iconColor;
-  final Color iconBackground;
   final VoidCallback onTap;
   final VoidCallback onRename;
-  final VoidCallback onDelete;
+  final VoidCallback onArchive;
+}
+
+class _MarketPromoCard extends StatelessWidget {
+  const _MarketPromoCard();
+
+  @override
+  Widget build(BuildContext context) => Material(
+    color: Colors.transparent,
+    borderRadius: BorderRadius.circular(26),
+    clipBehavior: Clip.antiAlias,
+    child: InkWell(
+      onTap: () => context.push('/market'),
+      child: Container(
+        height: 136,
+        padding: const EdgeInsets.fromLTRB(18, 16, 14, 16),
+        decoration: BoxDecoration(
+          gradient: const LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [Color(0xfffff8ed), Color(0xffffe5b8)],
+          ),
+          border: Border.all(
+            color: Colors.white.withValues(alpha: 0.68),
+            width: 1.2,
+          ),
+          boxShadow: appCardShadow,
+        ),
+        child: Stack(
+          children: [
+            Padding(
+              padding: const EdgeInsets.only(right: 100),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    '资源市场',
+                    style: TextStyle(
+                      color: Color(0xff8d6338),
+                      fontSize: 11,
+                      fontWeight: FontWeight.w800,
+                      letterSpacing: 1,
+                    ),
+                  ),
+                  const SizedBox(height: 5),
+                  const Text(
+                    '探索更多学习资源',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      color: Color(0xff3f2a14),
+                      fontSize: 18,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  const Text(
+                    '发现适合你的文档与牌组',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(color: Color(0xff8a6946), fontSize: 11),
+                  ),
+                  const Spacer(),
+                  const Text(
+                    '立即探索  →',
+                    style: TextStyle(
+                      color: Color(0xff9d5d0e),
+                      fontSize: 12,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Positioned(
+              right: 2,
+              top: -2,
+              child: const SizedBox(
+                width: 116,
+                height: 116,
+                child: _MarketArt(),
+              ),
+            ),
+          ],
+        ),
+      ),
+    ),
+  );
+}
+
+class _MarketArt extends StatelessWidget {
+  const _MarketArt();
+
+  @override
+  Widget build(BuildContext context) =>
+      const CustomPaint(painter: _MarketArtPainter(), size: Size(116, 116));
+}
+
+class _MarketArtPainter extends CustomPainter {
+  const _MarketArtPainter();
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final stroke = Paint()
+      ..color = const Color(0xffb97838).withValues(alpha: 0.72)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2.2
+      ..strokeCap = StrokeCap.round
+      ..strokeJoin = StrokeJoin.round;
+    final paper = Paint()
+      ..color = const Color(0xfffffbf4).withValues(alpha: 0.82)
+      ..style = PaintingStyle.fill;
+    final shadow = Paint()
+      ..color = const Color(0xffb16d31).withValues(alpha: 0.12)
+      ..style = PaintingStyle.fill;
+
+    canvas.drawCircle(
+      Offset(size.width * 0.58, size.height * 0.52),
+      52,
+      Paint()..color = Colors.white.withValues(alpha: 0.34),
+    );
+
+    canvas.save();
+    canvas.translate(4, 12);
+    canvas.rotate(-0.1);
+    final backPage = RRect.fromRectAndRadius(
+      const Rect.fromLTWH(21, 21, 50, 65),
+      const Radius.circular(9),
+    );
+    canvas.drawRRect(backPage, shadow);
+    canvas.drawRRect(backPage, paper);
+    canvas.drawRRect(backPage, stroke);
+    canvas.restore();
+
+    canvas.save();
+    canvas.translate(16, 5);
+    canvas.rotate(0.08);
+    final frontPage = RRect.fromRectAndRadius(
+      const Rect.fromLTWH(20, 20, 50, 66),
+      const Radius.circular(9),
+    );
+    canvas.drawRRect(frontPage, paper);
+    canvas.drawRRect(frontPage, stroke);
+    canvas.drawLine(const Offset(29, 39), const Offset(62, 39), stroke);
+    canvas.drawLine(const Offset(29, 50), const Offset(57, 50), stroke);
+    canvas.drawLine(const Offset(29, 61), const Offset(64, 61), stroke);
+    canvas.restore();
+
+    final sparkle = Path()
+      ..moveTo(98, 14)
+      ..lineTo(101, 21)
+      ..lineTo(108, 24)
+      ..lineTo(101, 27)
+      ..lineTo(98, 34)
+      ..lineTo(95, 27)
+      ..lineTo(88, 24)
+      ..lineTo(95, 21)
+      ..close();
+    canvas.drawPath(sparkle, stroke);
+  }
+
+  @override
+  bool shouldRepaint(covariant _MarketArtPainter oldDelegate) => false;
+}
+
+class _ResourceSearchDelegate extends SearchDelegate<void> {
+  _ResourceSearchDelegate({
+    required this.documents,
+    required this.cards,
+    required this.collections,
+  }) : super(searchFieldLabel: '搜索文件夹、牌组或内容');
+
+  final List<DocumentModel> documents;
+  final List<CardModel> cards;
+  final List<CollectionModel> collections;
+
+  @override
+  List<Widget>? buildActions(BuildContext context) => [
+    if (query.isNotEmpty)
+      IconButton(
+        tooltip: '清除搜索',
+        onPressed: () => query = '',
+        icon: const Icon(Icons.clear_rounded),
+      ),
+  ];
+
+  @override
+  Widget? buildLeading(BuildContext context) => IconButton(
+    tooltip: '返回',
+    onPressed: () => close(context, null),
+    icon: const Icon(Icons.arrow_back_rounded),
+  );
+
+  @override
+  Widget buildResults(BuildContext context) => _buildResultList(context);
+
+  @override
+  Widget buildSuggestions(BuildContext context) => _buildResultList(context);
+
+  Widget _buildResultList(BuildContext context) {
+    final keyword = query.trim().toLowerCase();
+    final categories = collections
+        .where(
+          (collection) =>
+              collection.type == CollectionType.documentCategory &&
+              !collection.archived &&
+              _matches(collection.name, keyword),
+        )
+        .toList();
+    final decks = _SectionContent._groupCards(
+      cards,
+      collections,
+    ).where((deck) => _matches(deck.name, keyword)).toList();
+    final matchingDocuments = documents
+        .where(
+          (document) =>
+              _matches(document.title, keyword) ||
+              _matches(document.folder, keyword),
+        )
+        .take(8)
+        .toList();
+    final matchingCards = cards
+        .where(
+          (card) =>
+              _matches(card.question, keyword) ||
+              _matches(card.folder, keyword),
+        )
+        .take(8)
+        .toList();
+
+    if (categories.isEmpty &&
+        decks.isEmpty &&
+        matchingDocuments.isEmpty &&
+        matchingCards.isEmpty) {
+      return const Center(
+        child: EmptyState(
+          title: '没有找到资源',
+          message: '试试搜索文件夹、牌组名称或文章内容。',
+          icon: Icons.search_off_rounded,
+        ),
+      );
+    }
+
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 32),
+      children: [
+        if (categories.isNotEmpty) ...[
+          const _SearchGroupTitle(title: '我的文档'),
+          for (final category in categories)
+            _SearchResultTile(
+              label: '文档',
+              color: _collectionColor(category.color, AppVisualColors.green),
+              title: category.name,
+              subtitle: '打开这个文档分类',
+              onTap: () {
+                final router = GoRouter.of(context);
+                close(context, null);
+                router.push(
+                  Uri(
+                    path: '/library',
+                    queryParameters: {'folder': category.name},
+                  ).toString(),
+                );
+              },
+            ),
+        ],
+        if (decks.isNotEmpty) ...[
+          const _SearchGroupTitle(title: '牌组'),
+          for (final deck in decks)
+            _SearchResultTile(
+              label: '牌组',
+              color: _collectionColor(
+                deck.collection?.color ?? '',
+                const Color(0xff4778e8),
+              ),
+              title: deck.name,
+              subtitle: '${deck.cards.length} 张卡牌',
+              onTap: () {
+                final router = GoRouter.of(context);
+                close(context, null);
+                router.push('/cards/deck', extra: deck.routeFolder);
+              },
+            ),
+        ],
+        if (matchingDocuments.isNotEmpty) ...[
+          const _SearchGroupTitle(title: '文章'),
+          for (final document in matchingDocuments)
+            _SearchResultTile(
+              label: '文',
+              color: AppVisualColors.green,
+              title: document.title,
+              subtitle: document.folder.trim().isEmpty
+                  ? '未分类文档'
+                  : document.folder,
+              onTap: () {
+                final router = GoRouter.of(context);
+                close(context, null);
+                router.push('/library/document/${document.id}');
+              },
+            ),
+        ],
+        if (matchingCards.isNotEmpty) ...[
+          const _SearchGroupTitle(title: '卡牌'),
+          for (final card in matchingCards)
+            _SearchResultTile(
+              label: '卡',
+              color: const Color(0xff4778e8),
+              title: card.question,
+              subtitle: card.folder.trim().isEmpty ? '未分类牌组' : card.folder,
+              onTap: () {
+                final router = GoRouter.of(context);
+                close(context, null);
+                router.push('/cards/${card.id}');
+              },
+            ),
+        ],
+      ],
+    );
+  }
+
+  static bool _matches(String value, String keyword) {
+    if (keyword.isEmpty) return true;
+    return value.toLowerCase().contains(keyword);
+  }
+}
+
+class _SearchGroupTitle extends StatelessWidget {
+  const _SearchGroupTitle({required this.title});
+
+  final String title;
+
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.fromLTRB(2, 16, 2, 8),
+    child: Text(
+      title,
+      style: const TextStyle(
+        color: AppVisualColors.ink,
+        fontSize: 15,
+        fontWeight: FontWeight.w800,
+      ),
+    ),
+  );
+}
+
+class _SearchResultTile extends StatelessWidget {
+  const _SearchResultTile({
+    required this.label,
+    required this.color,
+    required this.title,
+    required this.subtitle,
+    required this.onTap,
+  });
+
+  final String label;
+  final Color color;
+  final String title;
+  final String subtitle;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) => Container(
+    margin: const EdgeInsets.only(bottom: 8),
+    decoration: BoxDecoration(
+      color: Colors.white,
+      borderRadius: BorderRadius.circular(17),
+      boxShadow: appCardShadow,
+    ),
+    child: ListTile(
+      onTap: onTap,
+      leading: Container(
+        width: 42,
+        height: 42,
+        decoration: BoxDecoration(
+          color: color.withValues(alpha: 0.12),
+          borderRadius: BorderRadius.circular(13),
+        ),
+        child: Center(
+          child: Text(
+            label,
+            style: TextStyle(
+              color: color,
+              fontSize: label.length > 2 ? 9 : 15,
+              fontWeight: FontWeight.w800,
+              letterSpacing: label.length > 2 ? 0.4 : 0,
+            ),
+          ),
+        ),
+      ),
+      title: Text(
+        title,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: const TextStyle(
+          color: AppVisualColors.ink,
+          fontSize: 14,
+          fontWeight: FontWeight.w700,
+        ),
+      ),
+      subtitle: Text(
+        subtitle,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: const TextStyle(color: AppVisualColors.muted, fontSize: 12),
+      ),
+      trailing: const Icon(
+        Icons.chevron_right_rounded,
+        color: AppVisualColors.muted,
+      ),
+    ),
+  );
+}
+
+Color _collectionColor(String value, Color fallback) {
+  switch (value.trim().toLowerCase()) {
+    case 'green':
+      return AppVisualColors.green;
+    case 'blue':
+      return const Color(0xff4778e8);
+    case 'orange':
+      return const Color(0xffe9950b);
+    case 'purple':
+      return const Color(0xff8d61d8);
+  }
+
+  var hex = value.trim().toLowerCase();
+  if (hex.startsWith('#')) hex = hex.substring(1);
+  if (hex.length != 6 && hex.length != 8) return fallback;
+  final parsed = int.tryParse(hex, radix: 16);
+  if (parsed == null) return fallback;
+  return Color(hex.length == 6 ? 0xff000000 | parsed : parsed);
 }
 
 class _DeckSummary {
-  const _DeckSummary({required this.folder, required this.cards});
+  const _DeckSummary({
+    required this.folder,
+    required this.cards,
+    this.collection,
+  });
 
   final String folder;
   final List<CardModel> cards;
+  final CollectionModel? collection;
 
-  String get name => folder.trim().isEmpty ? '未分类' : folder;
+  String get name =>
+      collection?.name ?? (folder.trim().isEmpty ? '未分类' : folder);
 
-  String get routeFolder => folder.trim().isEmpty ? '未分类' : folder;
+  String get routeFolder => name;
+
+  String get accountId =>
+      cards.isNotEmpty ? cards.first.accountId : collection?.accountId ?? '';
 
   DateTime get updatedAt {
+    if (cards.isEmpty) return collection?.updatedAt ?? DateTime.now();
     var latest = cards.first.updatedAt;
     for (final card in cards.skip(1)) {
       if (card.updatedAt.isAfter(latest)) latest = card.updatedAt;
@@ -827,11 +1234,6 @@ class _DeckSummary {
   }
 
   int get dueCount => cards.where((card) => card.isDue).length;
-}
-
-String _folderLabel(String folder) {
-  final value = folder.trim();
-  return value.isEmpty ? '未分类' : value;
 }
 
 class _KnowledgeBaseError extends StatelessWidget {

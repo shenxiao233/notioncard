@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter/services.dart';
@@ -32,6 +34,13 @@ class _KNcardAppState extends ConsumerState<KNcardApp>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    // Start warming the API connection as soon as the first frame is ready.
+    // ApiClient deduplicates this with the login-page fallback and any
+    // resumed lifecycle callback.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      unawaited(ref.read(apiClientProvider).warmup());
+    });
   }
 
   @override
@@ -43,6 +52,9 @@ class _KNcardAppState extends ConsumerState<KNcardApp>
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
+      // Reuse a successful warmup for 60 seconds; after that, refresh the
+      // connection in the background before the next user action.
+      unawaited(ref.read(apiClientProvider).warmup());
       ref.read(syncControllerProvider.notifier).sync(reason: 'resumed');
       if (ref.read(currentAccountProvider) != null) {
         ref.read(appUpdateControllerProvider.notifier).check(silent: true);

@@ -8,9 +8,11 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../database/app_database.dart';
 import '../models/card_model.dart';
+import '../models/collection_model.dart';
 import '../models/document_model.dart';
 import '../network/api_client.dart';
 import '../network/api_exception.dart';
+import 'settings_sync.dart';
 import 'sync_payload.dart';
 import '../utils/rich_text.dart';
 
@@ -20,23 +22,26 @@ class SyncCoordinator {
   static const _supportedObjectTypes = {'DECK', 'DOCUMENT', 'CARD', 'SETTINGS'};
   static const _lastSyncKey = 'sync.last_sync';
   static const _syncRevisionKey = 'sync.revision';
+  static const _progressCursorKey = 'sync.progress_cursor';
   static const _fullSyncVersionKey = 'sync.full_sync_version';
   static const _cardOrderVersionKey = 'sync.card_order_version';
   static const _cardContentHashKey = 'sync.card_content_hashes';
   // The saved value is a completed high-water timestamp, never an in-flight
   // pagination cursor. Version 2 stored the opaque cursor itself and must be
   // invalidated once so it cannot hide changes made after that cursor.
-  static const _fullSyncVersion = '3';
+  static const _fullSyncVersion = '4';
   static const _cardOrderVersion = '1';
   // Keep these in lockstep with the server's SYNC_BATCH_MAX. Only mutations
   // that are known to be progress-only are sent in the larger batch; a first
   // upload may still contain the complete card body and must stay smaller.
   static const _fullBatchSize = 50;
   static const _progressBatchSize = 200;
-  // Keep this aligned with the production server's SYNC_PAGE_MAX. A larger
-  // page removes a network round trip during first sync without changing the
-  // incremental sync path.
-  static const _fullSyncPageSize = 1000;
+  // The server can dynamically serve a one-shot snapshot. If an older server
+  // or a large account falls back to cursor pagination, keep each page large
+  // enough to reduce mobile round trips while remaining below the protocol
+  // hard cap.
+  static const _fullSyncPageSize = 1500;
+  static const _progressPageSize = 1000;
   static const _maxBatchAttempts = 3;
   static const _batchRetryBaseMs = 150;
   // GET requests are idempotent. A short bounded retry absorbs transient
@@ -89,7 +94,21 @@ class SyncCoordinator {
         queryParameters: knownRevision == null
             ? null
             : {'revision': knownRevision},
+        options: Options(
+          validateStatus: (status) =>
+              status != null && status >= 200 && status < 400,
+          headers: knownRevision == null
+              ? null
+              : {'If-None-Match': _syncEtag(knownRevision)},
+        ),
       );
+      if (response.statusCode == 304) {
+        return SyncStatus(
+          changed: false,
+          revision: knownRevision,
+          supported: true,
+        );
+      }
       final body = _stringMap(response.data);
       final revision = body?['revision']?.toString().trim();
       final changed = body?['changed'];
@@ -247,7 +266,12 @@ class SyncCoordinator {
               batchServerVersions[versionKey] = serverVersion;
               _serverVersionsFor(accountId)[versionKey] = serverVersion;
             }
-            if (result['conflict'] == true) {
+            if (result['staleDeckEpoch'] == true) {
+              final stalePayload = _payloadMap(result['data']);
+              if (stalePayload != null) {
+                await _applyDeckEpochPayload(accountId, stalePayload);
+              }
+            } else if (result['conflict'] == true) {
               conflicts++;
               if (_isRemoteDeletion(result)) {
                 await _removeRemoteObject(
@@ -562,6 +586,8 @@ class SyncCoordinator {
             'requests': requestPayload,
             if (baseRevision != null && baseRevision.trim().isNotEmpty)
               'baseRevision': baseRevision,
+            if (_canUseProgressChannel(accountId, batch))
+              'progressChannel': true,
           },
           cancelToken: cancelToken,
         );
@@ -698,6 +724,7 @@ class SyncCoordinator {
     ApiClient client,
     String path, {
     Map<String, dynamic>? queryParameters,
+    Options? options,
     CancelToken? cancelToken,
   }) async {
     for (var attempt = 0; ; attempt++) {
@@ -706,6 +733,7 @@ class SyncCoordinator {
         final response = await client.get(
           path,
           queryParameters: queryParameters,
+          options: options,
           cancelToken: cancelToken,
         );
         if (attempt > 0) {
@@ -771,12 +799,14 @@ class SyncCoordinator {
     // changed by a progress mutation. Older servers ignore this query flag
     // and continue returning complete card payloads.
     final requestProgressOnly = legacyLastSync != null;
+    final isInitialPull = !requestProgressOnly;
     final pendingItems = await database.loadPendingSync(accountId);
     final protectedObjectKeys = {
       for (final item in pendingItems)
         _objectKey(item.objectType.trim().toUpperCase(), item.objectId),
     };
     final deckRenamesToApply = <Map<String, String>>[];
+    final deckEpochPayloads = <Map<String, dynamic>>[];
     for (final item in pendingItems) {
       if (item.objectType != 'DECK' || item.operation != SyncOperation.upsert) {
         continue;
@@ -796,8 +826,11 @@ class SyncCoordinator {
     final contentFetchIds = <String>{};
     String? completedHighWaterAt;
     String? completedSyncWatermark;
+    String? progressCursorFromFullSync;
+    String? progressCursorToSave;
     String? syncRevision;
     var missingProgressContent = false;
+    var requestSnapshot = true;
     while (hasMore) {
       page++;
       if (page > 1000) {
@@ -811,6 +844,9 @@ class SyncCoordinator {
       queryParameters['limit'] = _fullSyncPageSize;
       if (requestProgressOnly) queryParameters['progressOnly'] = 'true';
       if (requestProgressOnly) queryParameters['contentMode'] = 'manifest';
+      if (requestSnapshot && cursor == null) {
+        queryParameters['snapshot'] = 'true';
+      }
       if (cursor != null && cursor.trim().isNotEmpty) {
         queryParameters['cursor'] = cursor;
       } else if (legacyLastSync != null && legacyLastSync.trim().isNotEmpty) {
@@ -831,10 +867,33 @@ class SyncCoordinator {
           message: 'Invalid full sync response',
         );
       }
+      if (body['snapshotTooLarge'] == true) {
+        if (!requestSnapshot || page != 1) {
+          throw const ApiException(
+            statusCode: 502,
+            message: 'Snapshot fallback response is invalid',
+          );
+        }
+        // The server has already captured a safe high-water boundary but the
+        // account is larger than the one-shot response budget. Retry the same
+        // pull through the cursor protocol without losing the local state.
+        requestSnapshot = false;
+        page--;
+        developer.log(
+          'fullSync snapshot too large; falling back to cursor pagination '
+          'account=$accountId',
+          name: 'SyncCoordinator',
+        );
+        continue;
+      }
       syncRevision = _maxSyncRevision(
         syncRevision,
         _syncRevisionValue(body['syncRevision']),
       );
+      final responseProgressCursor = body['progressCursor']?.toString().trim();
+      if (responseProgressCursor != null && responseProgressCursor.isNotEmpty) {
+        progressCursorFromFullSync = responseProgressCursor;
+      }
       final explicitHighWaterAt = body['highWaterAt']?.toString().trim();
       final pageHighWaterAt = (explicitHighWaterAt ?? body['syncTime'])
           ?.toString()
@@ -976,9 +1035,20 @@ class SyncCoordinator {
             documents++;
             hasRemoteContent = true;
           case 'DECK':
-            await _saveDeckMetadata(accountId, objectId, payload);
-            final rename = _deckRenameFromPayload(objectId, payload);
-            if (rename != null) deckRenamesToApply.add(rename);
+            if (_isCollectionPayload(payload)) {
+              await _saveCollectionMetadata(accountId, objectId, payload);
+              final rename = _collectionRenameFromPayload(objectId, payload);
+              if (rename != null) {
+                await _applyCollectionRename(accountId, rename);
+              }
+            } else {
+              await _saveDeckMetadata(accountId, objectId, payload);
+              final rename = _deckRenameFromPayload(objectId, payload);
+              if (rename != null) deckRenamesToApply.add(rename);
+              if (_deckEpochFromPayload(payload) != null) {
+                deckEpochPayloads.add(payload);
+              }
+            }
             decks++;
             hasRemoteContent = true;
           case 'SETTINGS':
@@ -1021,6 +1091,33 @@ class SyncCoordinator {
       hasMore = pageHasMore;
     }
 
+    if (!isInitialPull) {
+      if (localCardsById == null) {
+        final localCards = await database.loadCards(accountId);
+        localCardsById = {for (final value in localCards) value.id: value};
+      }
+      final progressReport = await _pullProgressChanges(
+        accountId,
+        localCardsById!,
+        protectedObjectKeys: protectedObjectKeys,
+        contentFetchIds: contentFetchIds,
+        cancelToken: cancelToken,
+      );
+      cards += progressReport.cards;
+      syncRevision = _maxSyncRevision(
+        syncRevision,
+        progressReport.syncRevision,
+      );
+      if (progressReport.supported) {
+        progressCursorToSave = progressReport.cursor;
+      }
+    } else if (progressCursorFromFullSync != null) {
+      // The full object pull merged the current progress snapshot into every
+      // card. Establish the independent progress cursor at that same
+      // high-water boundary so the first incremental pull is genuinely small.
+      progressCursorToSave = progressCursorFromFullSync;
+    }
+
     if (contentFetchIds.isNotEmpty && !missingProgressContent) {
       await _fetchMissingCardContent(
         accountId,
@@ -1045,6 +1142,15 @@ class SyncCoordinator {
     // deck object before its cards.
     for (final rename in deckRenamesToApply) {
       await _applyDeckRename(accountId, rename);
+    }
+    for (final payload in deckEpochPayloads) {
+      await _applyDeckEpochPayload(accountId, payload);
+    }
+    if (progressCursorToSave != null && progressCursorToSave!.isNotEmpty) {
+      await preferences?.setString(
+        _progressCursorKeyFor(accountId),
+        progressCursorToSave!,
+      );
     }
 
     // Persist the complete pull's version map once. Writing after every page
@@ -1094,6 +1200,132 @@ class SyncCoordinator {
       documents: documents,
       decks: decks,
       settings: settings,
+    );
+  }
+
+  Future<ProgressPullReport> _pullProgressChanges(
+    String accountId,
+    Map<String, CardModel> localCardsById, {
+    required Set<String> protectedObjectKeys,
+    required Set<String> contentFetchIds,
+    CancelToken? cancelToken,
+  }) async {
+    final client = apiClient;
+    if (client == null) return const ProgressPullReport(supported: false);
+    var cursor = preferences?.getString(_progressCursorKeyFor(accountId));
+    var hasMore = true;
+    var page = 0;
+    var resetCorruptCursor = false;
+    var appliedCards = 0;
+    String? syncRevision;
+
+    while (hasMore) {
+      page++;
+      if (page > 1000) {
+        throw const ApiException(
+          statusCode: 502,
+          message: 'Progress sync returned too many pages',
+        );
+      }
+      final queryParameters = <String, dynamic>{
+        'limit': _progressPageSize,
+        if (cursor != null && cursor.trim().isNotEmpty) 'cursor': cursor,
+      };
+      try {
+        final response = await _getWithRetry(
+          client,
+          '/api/v2/sync/progress',
+          queryParameters: queryParameters,
+          cancelToken: cancelToken,
+        );
+        final body = _stringMap(response.data);
+        final rawChanges = body?['changes'];
+        if (body == null || rawChanges is! List) {
+          throw const ApiException(
+            statusCode: 502,
+            message: 'Invalid progress sync response',
+          );
+        }
+        syncRevision = _maxSyncRevision(
+          syncRevision,
+          _syncRevisionValue(body['syncRevision']),
+        );
+        final cardsToSave = <String, CardModel>{};
+        for (final raw in rawChanges.whereType<Map>()) {
+          final change = _stringMap(raw);
+          if (change == null) continue;
+          final cardId = change['cardId']?.toString().trim();
+          if (cardId == null || cardId.isEmpty) continue;
+          if (protectedObjectKeys.contains(_objectKey('CARD', cardId))) {
+            continue;
+          }
+          final local = localCardsById[cardId];
+          if (local == null) {
+            // The progress channel intentionally has no card body. Repair a
+            // missing local body through the bounded content endpoint after
+            // the progress pages have been acknowledged.
+            contentFetchIds.add(cardId);
+            continue;
+          }
+          final progress = _payloadMap(change['data']) ?? <String, dynamic>{};
+          final remote = _cardFromPayload(
+            accountId,
+            {'id': cardId, ...progress},
+            fallbackId: cardId,
+            fallbackUpdatedAt: change['updatedAt'],
+          );
+          final merged = _mergeCardProgressOnly(local, remote);
+          cardsToSave[cardId] = merged;
+          localCardsById[cardId] = merged;
+          appliedCards++;
+        }
+        await database.saveCards(cardsToSave.values);
+
+        final responseCursor = body['nextCursor']?.toString().trim();
+        final pageHasMore = body['hasMore'] == true;
+        if (pageHasMore &&
+            (responseCursor == null ||
+                responseCursor.isEmpty ||
+                responseCursor == cursor)) {
+          throw const ApiException(
+            statusCode: 502,
+            message: 'Progress sync cursor did not advance',
+          );
+        }
+        if (responseCursor != null && responseCursor.isNotEmpty) {
+          cursor = responseCursor;
+        }
+        hasMore = pageHasMore;
+        developer.log(
+          'progressSync page=$page changes=${rawChanges.length} '
+          'applied=${cardsToSave.length} hasMore=$hasMore',
+          name: 'SyncCoordinator',
+        );
+      } on ApiException catch (error) {
+        if (error.statusCode == 404) {
+          // Older deployments do not expose the separate channel. Their
+          // progress mutations still update SyncObject, so fullSync remains
+          // the compatible fallback.
+          return ProgressPullReport(
+            cards: appliedCards,
+            syncRevision: syncRevision,
+            supported: false,
+          );
+        }
+        if (error.statusCode == 400 && cursor != null && !resetCorruptCursor) {
+          resetCorruptCursor = true;
+          cursor = null;
+          await preferences?.remove(_progressCursorKeyFor(accountId));
+          continue;
+        }
+        rethrow;
+      }
+    }
+    return ProgressPullReport(
+      cards: appliedCards,
+      syncRevision: syncRevision,
+      cursor: cursor,
+      supported: true,
     );
   }
 
@@ -1168,20 +1400,36 @@ class SyncCoordinator {
     final fsrs = data['fsrs'] is Map
         ? Map<String, dynamic>.from(data['fsrs'] as Map)
         : const <String, dynamic>{};
+    final type = CardType.values.firstWhere(
+      (value) => value.name == data['type'],
+      orElse: () => CardType.single,
+    );
+    final hasContent = data.containsKey('content');
+    final legacyNoteContent = data['noteContent']?.toString() ?? '';
+    // Older clients used noteContent as the back/content of a note card.
+    // Interpret that shape only when the new content field is absent. For
+    // ordinary cards, noteContent has always meant the user's personal note.
+    final content = hasContent
+        ? data['content']?.toString() ?? ''
+        : type == CardType.note
+        ? legacyNoteContent
+        : '';
+    final noteContent = hasContent || type != CardType.note
+        ? legacyNoteContent
+        : '';
     return CardModel(
       id: _firstText(data, const ['id']).isNotEmpty
           ? _firstText(data, const ['id'])
           : fallbackId ?? '',
       accountId: accountId,
-      type: CardType.values.firstWhere(
-        (value) => value.name == data['type'],
-        orElse: () => CardType.single,
-      ),
+      type: type,
       folder: data['folder']?.toString() ?? '',
+      source: data['source']?.toString() ?? '',
       question: data['question']?.toString() ?? '',
       options: _stringStringMap(data['options']),
       answer: _stringList(data['answer']),
-      noteContent: data['noteContent']?.toString() ?? '',
+      content: content,
+      noteContent: noteContent,
       explanation: data['explanation']?.toString() ?? '',
       tags: _stringList(data['tags']),
       dueAt: _date(data['dueAt']),
@@ -1602,11 +1850,13 @@ class SyncCoordinator {
     bool preferLocalProgress = false,
   }) {
     if (!preferLocalProgress && local.reviews < remote.reviews) {
-      return remote.sortOrder == null && local.sortOrder != null
-          ? remote.copyWith(sortOrder: local.sortOrder)
-          : remote;
+      return remote.copyWith(
+        sortOrder: remote.sortOrder ?? local.sortOrder,
+        source: remote.source.trim().isEmpty ? local.source : remote.source,
+      );
     }
     return remote.copyWith(
+      source: remote.source.trim().isEmpty ? local.source : remote.source,
       sortOrder: remote.sortOrder ?? local.sortOrder,
       dueAt: local.dueAt,
       updatedAt: local.updatedAt,
@@ -1659,9 +1909,16 @@ class SyncCoordinator {
       case 'DECK':
         final id = fallbackId?.trim();
         if (id != null && id.isNotEmpty) {
-          await _saveDeckMetadata(accountId, id, payload);
-          final rename = _deckRenameFromPayload(id, payload);
-          if (rename != null) await _applyDeckRename(accountId, rename);
+          if (_isCollectionPayload(payload)) {
+            await _saveCollectionMetadata(accountId, id, payload);
+            final rename = _collectionRenameFromPayload(id, payload);
+            if (rename != null) await _applyCollectionRename(accountId, rename);
+          } else {
+            await _saveDeckMetadata(accountId, id, payload);
+            final rename = _deckRenameFromPayload(id, payload);
+            if (rename != null) await _applyDeckRename(accountId, rename);
+            await _applyDeckEpochPayload(accountId, payload);
+          }
         }
       case 'SETTINGS':
         await _applyRemoteSettings(accountId, payload);
@@ -1682,6 +1939,107 @@ class SyncCoordinator {
     final name = _deckNameFromPayload(payload);
     if (name.isNotEmpty) {
       await prefs.setString(_deckNameKey(accountId, name), objectId);
+    }
+  }
+
+  bool _isCollectionPayload(Map<String, dynamic> payload) {
+    final value = payload['collectionType']?.toString().trim();
+    return value == CollectionType.deck.name ||
+        value == CollectionType.documentCategory.name;
+  }
+
+  Future<void> _saveCollectionMetadata(
+    String accountId,
+    String objectId,
+    Map<String, dynamic> payload,
+  ) async {
+    final name = _firstText(payload, const ['name', 'title', 'folder']);
+    if (objectId.trim().isEmpty || name.isEmpty) return;
+    final type =
+        payload['collectionType']?.toString() ==
+            CollectionType.documentCategory.name
+        ? CollectionType.documentCategory
+        : CollectionType.deck;
+    final updatedAt = _date(payload['updatedAt']);
+    final createdAt = _date(payload['createdAt'] ?? payload['updatedAt']);
+    final existing = await database.loadCollections(accountId);
+    final duplicate = existing.where(
+      (value) =>
+          value.id != objectId &&
+          value.type == type &&
+          value.name.trim() == name,
+    );
+    for (final value in duplicate) {
+      if (value.id.startsWith('local-collection-')) {
+        await database.deleteCollection(value.id, accountId);
+      }
+    }
+    await database.saveCollection(
+      CollectionModel(
+        id: objectId,
+        accountId: accountId,
+        type: type,
+        name: name,
+        icon: payload['icon']?.toString() ?? 'folder',
+        color:
+            payload['color']?.toString() ??
+            (type == CollectionType.deck ? 'blue' : 'green'),
+        archived: payload['archived'] == true,
+        createdAt: createdAt,
+        updatedAt: updatedAt,
+      ),
+    );
+  }
+
+  Map<String, String>? _collectionRenameFromPayload(
+    String objectId,
+    Map<String, dynamic> payload,
+  ) {
+    final from = payload['renameFrom']?.toString().trim() ?? '';
+    final to = _firstText(payload, const ['name', 'title', 'folder']);
+    final type = payload['collectionType']?.toString().trim() ?? '';
+    if (objectId.trim().isEmpty || from.isEmpty || to.isEmpty || from == to) {
+      return null;
+    }
+    return {'id': objectId, 'from': from, 'to': to, 'type': type};
+  }
+
+  Future<void> _applyCollectionRename(
+    String accountId,
+    Map<String, String> rename,
+  ) async {
+    final from = rename['from'] ?? '';
+    final to = rename['to'] ?? '';
+    if (from.isEmpty || to.isEmpty || from == to) return;
+    final type = rename['type'] == CollectionType.documentCategory.name
+        ? CollectionType.documentCategory
+        : CollectionType.deck;
+    await database.transaction(() async {
+      if (type == CollectionType.documentCategory) {
+        await database.updateDocumentsFolder(
+          accountId: accountId,
+          fromFolder: from,
+          toFolder: to,
+        );
+      } else {
+        await database.updateCardsFolder(
+          accountId: accountId,
+          fromFolder: from,
+          toFolder: to,
+        );
+        await database.updateReviewEventsFolder(
+          accountId: accountId,
+          fromFolder: from,
+          toFolder: to,
+        );
+      }
+    });
+    final id = rename['id'];
+    if (id != null && id.isNotEmpty) {
+      final collection = await database.loadCollection(id, accountId);
+      if (collection != null && collection.name != to) {
+        await database.saveCollection(collection.copyWith(name: to));
+      }
     }
   }
 
@@ -1707,6 +2065,46 @@ class SyncCoordinator {
 
   String _deckNameFromPayload(Map<String, dynamic> payload) =>
       _firstText(payload, const ['title', 'folder', 'name']);
+
+  int? _deckEpochFromPayload(Map<String, dynamic> payload) {
+    final value = payload['resetEpoch'];
+    if (value is num) return value.toInt() >= 0 ? value.toInt() : null;
+    final parsed = int.tryParse(value?.toString() ?? '');
+    return parsed != null && parsed >= 0 ? parsed : null;
+  }
+
+  Future<void> _applyDeckEpochPayload(
+    String accountId,
+    Map<String, dynamic> payload,
+  ) async {
+    final epoch = _deckEpochFromPayload(payload);
+    final deckId = _firstText(payload, const ['id', 'deckId']);
+    final hasFolder =
+        payload.containsKey('folder') || payload.containsKey('title');
+    final folder = payload.containsKey('folder')
+        ? payload['folder']?.toString() ?? ''
+        : payload['title']?.toString() ?? '';
+    if (epoch == null || deckId.isEmpty) return;
+    final key = _deckEpochKey(accountId, deckId);
+    final current = preferences?.getInt(key) ?? 0;
+    if (epoch <= current) return;
+    if (hasFolder) {
+      await database.resetDeckProgress(
+        accountId: accountId,
+        folder: folder,
+        dueAt: DateTime.now(),
+      );
+      await database.discardPendingCardSyncByFolder(
+        accountId: accountId,
+        folder: folder,
+      );
+    }
+    await preferences?.setInt(key, epoch);
+    developer.log(
+      'applied deck relearn account=$accountId deck=$deckId epoch=$epoch',
+      name: 'SyncCoordinator',
+    );
+  }
 
   Future<void> _applyDeckRename(
     String accountId,
@@ -1734,10 +2132,10 @@ class SyncCoordinator {
   }
 
   String _deckNameKey(String accountId, String folder) =>
-      'sync.deck.local.name.' +
-      accountId +
-      '.' +
-      base64UrlEncode(utf8.encode(folder.trim()));
+      'sync.deck.local.name.$accountId.${base64UrlEncode(utf8.encode(folder.trim()))}';
+
+  String _deckEpochKey(String accountId, String deckId) =>
+      'sync.deck.epoch.$accountId.$deckId';
 
   Future<void> _applyRemoteSettings(
     String accountId,
@@ -1781,6 +2179,16 @@ class SyncCoordinator {
         );
       }
     }
+    final remoteFavorites = source.containsKey('favorites')
+        ? source['favorites']
+        : payload['favorites'];
+    if (remoteFavorites is List) {
+      await saveFavoriteCardIds(
+        prefs,
+        accountId,
+        remoteFavorites.whereType<String>(),
+      );
+    }
   }
 
   int? _version(Object? value) {
@@ -1793,6 +2201,11 @@ class SyncCoordinator {
 
   String _syncRevisionKeyFor(String accountId) =>
       '$_syncRevisionKey.$accountId';
+
+  String _syncEtag(String revision) => '"sync-revision-${revision.trim()}"';
+
+  String _progressCursorKeyFor(String accountId) =>
+      '$_progressCursorKey.$accountId';
 
   String? _syncRevisionValue(Object? value) {
     final raw = value?.toString().trim();
@@ -1865,23 +2278,29 @@ class SyncCoordinator {
     });
   }
 
+  bool _canUseProgressChannel(
+    String accountId,
+    List<SyncQueueItemModel> items,
+  ) {
+    if (items.isEmpty) return false;
+    final versions = _serverVersionsFor(accountId);
+    return items.every((item) {
+      if (item.objectType != 'CARD' || item.operation != SyncOperation.upsert) {
+        return false;
+      }
+      final decoded = _stringMap(_decodePayload(item.payload));
+      if (decoded?['syncMode'] != 'progress') return false;
+      return versions[_serverVersionKey(
+            accountId,
+            item.objectType,
+            item.objectId,
+          )] !=
+          null;
+    });
+  }
+
   int _batchSizeFor(String accountId, List<SyncQueueItemModel> items) {
-    final canUseProgressBatch =
-        items.isNotEmpty &&
-        items.every((item) {
-          if (item.objectType != 'CARD' ||
-              item.operation != SyncOperation.upsert) {
-            return false;
-          }
-          final decoded = _stringMap(_decodePayload(item.payload));
-          if (decoded?['syncMode'] != 'progress') return false;
-          return _serverVersionsFor(accountId)[_serverVersionKey(
-                accountId,
-                item.objectType,
-                item.objectId,
-              )] !=
-              null;
-        });
+    final canUseProgressBatch = _canUseProgressChannel(accountId, items);
     return canUseProgressBatch ? _progressBatchSize : _fullBatchSize;
   }
 
@@ -2064,6 +2483,8 @@ class SyncCoordinator {
       'suspended',
       'fsrs',
       'progressReset',
+      'deckId',
+      'deckEpoch',
     ]) {
       if (payload.containsKey(key)) result[key] = payload[key];
     }
@@ -2141,4 +2562,18 @@ class FullSyncReport {
   final int documents;
   final int decks;
   final int settings;
+}
+
+class ProgressPullReport {
+  const ProgressPullReport({
+    this.cards = 0,
+    this.syncRevision,
+    this.cursor,
+    this.supported = true,
+  });
+
+  final int cards;
+  final String? syncRevision;
+  final String? cursor;
+  final bool supported;
 }

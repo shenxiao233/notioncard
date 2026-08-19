@@ -4,6 +4,8 @@ enum FsrsState { newCard, learning, review, relearning }
 
 enum ReviewRating { again, hard, good, easy }
 
+enum CardHighlightSection { question, content, note, explanation }
+
 extension CardTypeLabel on CardType {
   String get label {
     switch (this) {
@@ -73,9 +75,11 @@ class CardModel {
     required this.accountId,
     required this.type,
     required this.folder,
+    this.source = '',
     required this.question,
     required this.options,
     required this.answer,
+    required this.content,
     required this.noteContent,
     required this.explanation,
     required this.tags,
@@ -93,9 +97,21 @@ class CardModel {
   final String accountId;
   final CardType type;
   final String folder;
+
+  /// A user-editable origin for the card, independent from its deck/folder.
+  ///
+  /// Older cards do not have this value and fall back to [folder] when they
+  /// are displayed.
+  final String source;
   final String question;
   final Map<String, String> options;
   final List<String> answer;
+
+  /// The body/back content of a [CardType.note] card.
+  ///
+  /// This is deliberately separate from [noteContent], which is the user's
+  /// private note attached to any card type.
+  final String content;
   final String noteContent;
   final String explanation;
   final List<String> tags;
@@ -116,8 +132,11 @@ class CardModel {
 
   CardModel copyWith({
     String? folder,
+    String? source,
     String? question,
+    String? content,
     String? noteContent,
+    List<String>? tags,
     DateTime? dueAt,
     int? sortOrder,
     DateTime? updatedAt,
@@ -131,12 +150,14 @@ class CardModel {
       accountId: accountId,
       type: type,
       folder: folder ?? this.folder,
+      source: source ?? this.source,
       question: question ?? this.question,
       options: options,
       answer: answer,
+      content: content ?? this.content,
       noteContent: noteContent ?? this.noteContent,
       explanation: explanation,
-      tags: tags,
+      tags: tags ?? this.tags,
       dueAt: dueAt ?? this.dueAt,
       createdAt: createdAt,
       sortOrder: sortOrder ?? this.sortOrder,
@@ -147,6 +168,24 @@ class CardModel {
       fsrs: fsrs ?? this.fsrs,
     );
   }
+}
+
+/// Canonical values used by the two-state review UI.
+const masteredCardMastery = 'mastered';
+const reviewingCardMastery = 'reviewing';
+
+extension CardReviewStatus on CardModel {
+  /// Older review snapshots used `familiar` and `tooEasy`. They remain
+  /// equivalent to the new "已掌握" presentation so upgrading the UI does
+  /// not make existing progress look like it was lost.
+  bool get isMastered =>
+      mastery == masteredCardMastery ||
+      mastery == 'familiar' ||
+      mastery == 'tooEasy';
+
+  String get reviewStatusLabel => isMastered ? '已掌握' : '复习中';
+
+  String get reviewCountLabel => reviews > 0 ? '$reviews 次复习' : '';
 }
 
 class ReviewEventModel {

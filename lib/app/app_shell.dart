@@ -8,6 +8,7 @@ import 'package:go_router/go_router.dart';
 import '../core/update/app_update_controller.dart';
 import '../core/widgets/app_brand.dart';
 import '../core/widgets/app_layout.dart';
+import '../features/editor/editor_page.dart';
 import 'app_providers.dart';
 
 class AppShell extends ConsumerWidget {
@@ -15,7 +16,8 @@ class AppShell extends ConsumerWidget {
 
   final Widget child;
 
-  int _indexFor(String location) {
+  int? _indexFor(String location) {
+    if (location.startsWith('/edit')) return null;
     if (location.startsWith('/library')) return 1;
     if (location.startsWith('/knowledge-base') ||
         location.startsWith('/cards-market') ||
@@ -31,18 +33,19 @@ class AppShell extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final location = GoRouterState.of(context).uri.path;
     final isStudyFlow = location == '/review/study';
+    final isEditorFlow = location == '/edit' || location.startsWith('/edit/');
     final isSettingsSubpage = location.startsWith('/settings/');
     final isDocumentDetail = location.startsWith('/library/document/');
     final isCardsSubpage = location.startsWith('/cards/');
     final isMarketDeckDetail = location.startsWith('/market/deck/');
     final showBottomNavigation =
+        !isEditorFlow &&
         !isStudyFlow &&
         !isSettingsSubpage &&
         !isDocumentDetail &&
         !isCardsSubpage &&
         !isMarketDeckDetail;
     final update = ref.watch(appUpdateControllerProvider);
-    final sync = ref.watch(syncControllerProvider);
     return AnnotatedRegion<SystemUiOverlayStyle>(
       value: const SystemUiOverlayStyle(
         statusBarColor: Colors.transparent,
@@ -65,45 +68,13 @@ class AppShell extends ConsumerWidget {
               Positioned(
                 left: 20,
                 right: 20,
-                bottom: AppLayoutMetrics.bottomNavigationBarBottomOffset,
+                bottom:
+                    AppLayoutMetrics.bottomNavigationBarBottomOffset +
+                    MediaQuery.viewPaddingOf(context).bottom,
                 child: _BottomNavigationBar(selectedIndex: _indexFor(location)),
               ),
-            Positioned(
-              top: 0,
-              left: 0,
-              right: 0,
-              child: IgnorePointer(
-                child: AnimatedSwitcher(
-                  duration: const Duration(milliseconds: 180),
-                  reverseDuration: const Duration(milliseconds: 280),
-                  switchInCurve: Curves.easeOut,
-                  switchOutCurve: Curves.easeIn,
-                  child: sync.isBusy
-                      ? const _SyncLoadingIndicator(
-                          key: ValueKey('sync-loading'),
-                        )
-                      : const SizedBox(key: ValueKey('sync-idle'), height: 2),
-                ),
-              ),
-            ),
           ],
         ),
-      ),
-    );
-  }
-}
-
-class _SyncLoadingIndicator extends StatelessWidget {
-  const _SyncLoadingIndicator({super.key});
-
-  @override
-  Widget build(BuildContext context) {
-    return SizedBox(
-      height: 2,
-      child: LinearProgressIndicator(
-        minHeight: 2,
-        backgroundColor: Colors.transparent,
-        color: Theme.of(context).colorScheme.primary.withValues(alpha: 0.72),
       ),
     );
   }
@@ -112,7 +83,7 @@ class _SyncLoadingIndicator extends StatelessWidget {
 class _BottomNavigationBar extends StatelessWidget {
   const _BottomNavigationBar({required this.selectedIndex});
 
-  final int selectedIndex;
+  final int? selectedIndex;
   static final _borderRadius = BorderRadius.circular(34);
   static const _dockHeight = AppLayoutMetrics.bottomNavigationBarHeight;
 
@@ -139,76 +110,93 @@ class _BottomNavigationBar extends StatelessWidget {
             ),
           ],
         ),
-        child: ClipRRect(
-          borderRadius: _borderRadius,
-          child: BackdropFilter(
-            filter: ImageFilter.blur(sigmaX: 26, sigmaY: 26),
-            child: DecoratedBox(
-              decoration: BoxDecoration(
-                gradient: LinearGradient(
-                  begin: Alignment.topCenter,
-                  end: Alignment.bottomCenter,
-                  colors: [
-                    Colors.white.withValues(alpha: 0.48),
-                    Colors.white.withValues(alpha: 0.28),
-                  ],
-                ),
-                border: Border.all(
-                  color: Colors.white.withValues(alpha: 0.72),
-                  width: 0.9,
-                ),
-              ),
-              child: Material(
-                type: MaterialType.transparency,
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 7,
-                    vertical: 2,
-                  ),
-                  child: LayoutBuilder(
-                    builder: (context, constraints) {
-                      const glowWidth = 86.0;
-                      final itemWidth = constraints.maxWidth / _items.length;
-                      return Stack(
-                        clipBehavior: Clip.none,
-                        children: [
-                          AnimatedPositioned(
-                            duration: const Duration(milliseconds: 520),
-                            curve: Curves.easeOutCubic,
-                            left:
-                                itemWidth * selectedIndex +
-                                (itemWidth - glowWidth) / 2,
-                            top: -4,
-                            width: glowWidth,
-                            height: 58,
-                            child: const IgnorePointer(
-                              child: _DiffuseSelectionGlow(),
-                            ),
-                          ),
-                          Row(
-                            children: [
-                              for (
-                                var index = 0;
-                                index < _items.length;
-                                index++
-                              )
-                                Expanded(
-                                  child: _item(context, index, _items[index]),
-                                ),
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            const horizontalPadding = 7.0;
+            const glowWidth = 86.0;
+            const centerButtonSize = 56.0;
+            final contentWidth = constraints.maxWidth - horizontalPadding * 2;
+            final slotWidth = contentWidth / 5;
+            final selectedSlot = selectedIndex == null
+                ? null
+                : _slotForTab(selectedIndex!);
+            return Stack(
+              clipBehavior: Clip.hardEdge,
+              children: [
+                Positioned.fill(
+                  child: ClipRRect(
+                    borderRadius: _borderRadius,
+                    child: BackdropFilter(
+                      filter: ImageFilter.blur(sigmaX: 26, sigmaY: 26),
+                      child: DecoratedBox(
+                        decoration: BoxDecoration(
+                          gradient: LinearGradient(
+                            begin: Alignment.topCenter,
+                            end: Alignment.bottomCenter,
+                            colors: [
+                              Colors.white.withValues(alpha: 0.48),
+                              Colors.white.withValues(alpha: 0.28),
                             ],
                           ),
-                        ],
-                      );
-                    },
+                          border: Border.all(
+                            color: Colors.white.withValues(alpha: 0.72),
+                            width: 0.9,
+                          ),
+                        ),
+                        child: Material(
+                          type: MaterialType.transparency,
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: horizontalPadding,
+                              vertical: 2,
+                            ),
+                            child: Row(
+                              children: [
+                                Expanded(child: _item(context, 0, _items[0])),
+                                Expanded(child: _item(context, 1, _items[1])),
+                                const Expanded(child: SizedBox(height: 70)),
+                                Expanded(child: _item(context, 2, _items[2])),
+                                Expanded(child: _item(context, 3, _items[3])),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
                   ),
                 ),
-              ),
-            ),
-          ),
+                if (selectedSlot != null)
+                  AnimatedPositioned(
+                    duration: const Duration(milliseconds: 520),
+                    curve: Curves.easeOutCubic,
+                    left:
+                        horizontalPadding +
+                        slotWidth * selectedSlot +
+                        (slotWidth - glowWidth) / 2,
+                    top: -4,
+                    width: glowWidth,
+                    height: 58,
+                    child: const IgnorePointer(child: _DiffuseSelectionGlow()),
+                  ),
+                Positioned(
+                  left:
+                      horizontalPadding +
+                      slotWidth * 2 +
+                      (slotWidth - centerButtonSize) / 2,
+                  top: (_dockHeight - centerButtonSize) / 2,
+                  width: centerButtonSize,
+                  height: centerButtonSize,
+                  child: _createItem(context),
+                ),
+              ],
+            );
+          },
         ),
       ),
     );
   }
+
+  int _slotForTab(int index) => index < 2 ? index : index + 1;
 
   Widget _item(
     BuildContext context,
@@ -309,6 +297,29 @@ class _BottomNavigationBar extends StatelessWidget {
       ),
     );
   }
+
+  Widget _createItem(BuildContext context) => Semantics(
+    button: true,
+    selected: selectedIndex == null,
+    label: '编辑',
+    onTap: () => showEditorSheet(context),
+    child: Tooltip(
+      message: '编辑',
+      child: Material(
+        color: Colors.black,
+        elevation: 8,
+        shadowColor: Colors.black.withValues(alpha: 0.28),
+        shape: const CircleBorder(),
+        child: InkWell(
+          onTap: () => showEditorSheet(context),
+          customBorder: const CircleBorder(),
+          child: const Center(
+            child: Icon(Icons.add_rounded, color: Colors.white, size: 30),
+          ),
+        ),
+      ),
+    ),
+  );
 }
 
 class _DiffuseSelectionGlow extends StatefulWidget {

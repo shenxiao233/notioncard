@@ -1,12 +1,9 @@
-import 'dart:convert';
-import 'dart:math';
-
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../app/app_providers.dart';
 import '../../core/database/app_database.dart';
-import '../../core/models/card_model.dart';
+import '../../core/sync/settings_sync.dart';
 
 const reviewSelectedFolderKeyPrefix = 'review.selected_folder';
 
@@ -46,7 +43,7 @@ Future<bool> _saveSelectedReviewFolder(
       ? await preferences.remove(reviewSelectedFolderKey(accountId))
       : await preferences.setString(reviewSelectedFolderKey(accountId), folder);
   if (saved && database != null) {
-    await _enqueueReviewSettingsSync(
+    await enqueueSettingsSync(
       preferences: preferences,
       database: database,
       accountId: accountId,
@@ -90,7 +87,6 @@ class ReviewSettingsController extends StateNotifier<ReviewSettings> {
   final SharedPreferences _preferences;
   final String? _accountId;
   final AppDatabase? _database;
-  final Random _mutationRandom = Random.secure();
 
   static ReviewSettings _load(
     SharedPreferences preferences,
@@ -168,12 +164,10 @@ class ReviewSettingsController extends StateNotifier<ReviewSettings> {
     final accountId = _accountId;
     final database = _database;
     if (accountId == null || database == null) return;
-    await _enqueueReviewSettingsSync(
+    await enqueueSettingsSync(
       preferences: _preferences,
       database: database,
       accountId: accountId,
-      settings: state,
-      random: _mutationRandom,
     );
   }
 
@@ -182,40 +176,6 @@ class ReviewSettingsController extends StateNotifier<ReviewSettings> {
     if (value > 9999) return 9999;
     return value;
   }
-}
-
-Future<void> _enqueueReviewSettingsSync({
-  required SharedPreferences preferences,
-  required AppDatabase database,
-  required String accountId,
-  ReviewSettings? settings,
-  Random? random,
-}) async {
-  final value =
-      settings ?? ReviewSettingsController._load(preferences, accountId);
-  final now = DateTime.now();
-  final mutationRandom = random ?? Random.secure();
-  await database.enqueueSync(
-    SyncQueueItemModel(
-      id: 'settings-review-$accountId-${now.microsecondsSinceEpoch}-${mutationRandom.nextInt(1 << 32)}',
-      accountId: accountId,
-      objectType: 'SETTINGS',
-      objectId: 'review',
-      objectVersion: 1,
-      operation: SyncOperation.upsert,
-      payload: jsonEncode({
-        'newCardsPerDay': value.newCardsPerDay,
-        'reviewsPerDay': value.reviewsPerDay,
-        'autonomousLearning': value.autonomousLearning,
-        'selectedFolder': loadSelectedReviewFolder(preferences, accountId),
-      }),
-      status: SyncItemStatus.pending,
-      attempts: 0,
-      lastError: null,
-      createdAt: now,
-      updatedAt: now,
-    ),
-  );
 }
 
 final reviewSettingsProvider =
